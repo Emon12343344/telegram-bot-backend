@@ -7,6 +7,9 @@ const API_KEY = process.env.BSCSCAN_API_KEY;
 const PAYMENT_WALLET =
   (process.env.PAYMENT_WALLET || "").toLowerCase();
 
+/*
+  BNB Smart Chain USDT (BEP-20)
+*/
 const USDT_CONTRACT =
   "0x55d398326f99059ff775485246999027b3197955";
 
@@ -34,9 +37,8 @@ function verifyPayment(txHash, callback) {
   }
 
   const url =
-    "https://api.etherscan.io/v2/api" +
-    "?chainid=56" +
-    "&module=account" +
+    "https://api.bscscan.com/api" +
+    "?module=account" +
     "&action=tokentx" +
     "&contractaddress=" +
     USDT_CONTRACT +
@@ -44,6 +46,8 @@ function verifyPayment(txHash, callback) {
     PAYMENT_WALLET +
     "&page=1" +
     "&offset=100" +
+    "&startblock=0" +
+    "&endblock=999999999" +
     "&sort=desc" +
     "&apikey=" +
     encodeURIComponent(API_KEY);
@@ -63,38 +67,39 @@ function verifyPayment(txHash, callback) {
         const json = JSON.parse(data);
 
         /*
-          Etherscan may return an API error
-          instead of an array.
+          BscScan API error response
         */
-
         if (!Array.isArray(json.result)) {
 
           return callback({
             verified: false,
             error:
-              json.message ||
               json.result ||
-              "Invalid blockchain API response"
+              json.message ||
+              "Invalid BscScan response"
           });
         }
 
-        const tx = json.result.find((x) => {
+        /*
+          Find exact TXID
+        */
+        const tx = json.result.find((item) => {
 
           return (
-
-            String(x.hash || "").toLowerCase() ===
+            String(item.hash || "").toLowerCase() ===
               txHash.toLowerCase()
 
             &&
 
-            String(x.to || "").toLowerCase() ===
+            String(item.to || "").toLowerCase() ===
               PAYMENT_WALLET
 
             &&
 
-            String(x.contractAddress || "").toLowerCase() ===
+            String(item.contractAddress || "").toLowerCase() ===
               USDT_CONTRACT
           );
+
         });
 
         if (!tx) {
@@ -103,12 +108,12 @@ function verifyPayment(txHash, callback) {
             verified: false,
             reason: "Payment not found"
           });
+
         }
 
         /*
-          Make sure transaction is successful.
+          Check transaction status
         */
-
         if (
           tx.isError !== undefined &&
           String(tx.isError) !== "0"
@@ -118,22 +123,22 @@ function verifyPayment(txHash, callback) {
             verified: false,
             reason: "Transaction failed"
           });
+
         }
 
+        /*
+          Calculate USDT amount
+        */
         const decimals =
           Number(tx.tokenDecimal || 18);
 
-        const rawValue =
-          String(tx.value || "0");
-
         const amount =
-          Number(rawValue) /
+          Number(tx.value || 0) /
           Math.pow(10, decimals);
 
         /*
           EXACTLY 0.50 USDT
         */
-
         if (
           !Number.isFinite(amount) ||
           Math.abs(amount - 0.50) > 0.00000001
@@ -145,29 +150,29 @@ function verifyPayment(txHash, callback) {
               "Amount is not exactly 0.50 USDT",
             amount: amount
           });
+
         }
 
+        /*
+          Payment verified
+        */
         return callback({
 
           verified: true,
 
-          txHash:
-            tx.hash,
+          txHash: tx.hash,
 
-          amount:
-            amount,
+          amount: amount,
 
-          from:
-            tx.from,
+          from: tx.from,
 
-          to:
-            tx.to,
+          to: tx.to,
 
-          blockNumber:
-            tx.blockNumber,
+          blockNumber: tx.blockNumber,
 
           confirmations:
             tx.confirmations || "0"
+
         });
 
       } catch (error) {
@@ -175,9 +180,11 @@ function verifyPayment(txHash, callback) {
         return callback({
           verified: false,
           error:
-            "Could not process blockchain API response"
+            "Could not process BscScan response"
         });
+
       }
+
     });
 
   }).on("error", () => {
@@ -185,16 +192,17 @@ function verifyPayment(txHash, callback) {
     callback({
       verified: false,
       error:
-        "Blockchain API connection failed"
+        "BscScan connection failed"
     });
 
   });
+
 }
 
 
-/* =====================================================
+/* =========================
    HTTP SERVER
-===================================================== */
+========================= */
 
 const server = http.createServer((req, res) => {
 
@@ -205,7 +213,9 @@ const server = http.createServer((req, res) => {
     );
 
 
-  /* HOME */
+  /* =========================
+     HOME
+  ========================= */
 
   if (parsed.pathname === "/") {
 
@@ -216,10 +226,13 @@ const server = http.createServer((req, res) => {
     return res.end(
       "Telegram Bot Backend is running!"
     );
+
   }
 
 
-  /* PAYMENT VERIFICATION */
+  /* =========================
+     VERIFY PAYMENT
+  ========================= */
 
   if (
     parsed.pathname ===
@@ -243,6 +256,7 @@ const server = http.createServer((req, res) => {
             "TXID is required"
         })
       );
+
     }
 
     verifyPayment(
@@ -260,6 +274,7 @@ const server = http.createServer((req, res) => {
         res.end(
           JSON.stringify(result)
         );
+
       }
     );
 
@@ -267,7 +282,9 @@ const server = http.createServer((req, res) => {
   }
 
 
-  /* NOT FOUND */
+  /* =========================
+     NOT FOUND
+  ========================= */
 
   res.writeHead(404, {
     "Content-Type":
@@ -275,8 +292,13 @@ const server = http.createServer((req, res) => {
   });
 
   res.end("Not Found");
+
 });
 
+
+/* =========================
+   START SERVER
+========================= */
 
 server.listen(
   PORT,
