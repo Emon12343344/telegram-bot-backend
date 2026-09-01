@@ -3,56 +3,46 @@ const https = require("https");
 
 const PORT = process.env.PORT || 3000;
 
-const API_KEY = process.env.BSCSCAN_API_KEY;
 const PAYMENT_WALLET =
   (process.env.PAYMENT_WALLET || "").toLowerCase();
 
-/*
-  BNB Smart Chain USDT (BEP-20)
-*/
+const RPC_URL =
+  "https://bsc-dataseed.bnbchain.org";
+
 const USDT_CONTRACT =
-  "0x55d398326f99059ff775485246999027b3197955";
+  "0x55d398326f99059ff775485246999027b3197955"
+    .toLowerCase();
 
-function verifyPayment(txHash, callback) {
+const TRANSFER_TOPIC =
+  "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a8df523b3ef";
 
-  if (!API_KEY) {
-    return callback({
-      verified: false,
-      error: "BSCSCAN_API_KEY is missing"
-    });
-  }
 
-  if (!PAYMENT_WALLET) {
-    return callback({
-      verified: false,
-      error: "PAYMENT_WALLET is missing"
-    });
-  }
+/* =========================
+   RPC REQUEST
+========================= */
 
-  if (!/^0x[a-fA-F0-9]{64}$/.test(txHash)) {
-    return callback({
-      verified: false,
-      error: "Invalid TXID"
-    });
-  }
+function rpcRequest(method, params, callback) {
 
-  const url =
-    "https://api.bscscan.com/api" +
-    "?module=account" +
-    "&action=tokentx" +
-    "&contractaddress=" +
-    USDT_CONTRACT +
-    "&address=" +
-    PAYMENT_WALLET +
-    "&page=1" +
-    "&offset=100" +
-    "&startblock=0" +
-    "&endblock=999999999" +
-    "&sort=desc" +
-    "&apikey=" +
-    encodeURIComponent(API_KEY);
+  const body = JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: method,
+    params: params
+  });
 
-  https.get(url, (res) => {
+  const url = new URL(RPC_URL);
+
+  const options = {
+    hostname: url.hostname,
+    path: url.pathname,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(body)
+    }
+  };
+
+  const req = https.request(options, (res) => {
 
     let data = "";
 
@@ -66,136 +56,291 @@ function verifyPayment(txHash, callback) {
 
         const json = JSON.parse(data);
 
-        /*
-          BscScan API error response
-        */
-        if (!Array.isArray(json.result)) {
-
+        if (json.error) {
           return callback({
-            verified: false,
-            error:
-              json.result ||
-              json.message ||
-              "Invalid BscScan response"
+            error: json.error.message || "RPC error"
           });
         }
 
-        /*
-          Find exact TXID
-        */
-        const tx = json.result.find((item) => {
+        callback(null, json.result);
 
-          return (
-            String(item.hash || "").toLowerCase() ===
-              txHash.toLowerCase()
+      } catch (e) {
 
-            &&
-
-            String(item.to || "").toLowerCase() ===
-              PAYMENT_WALLET
-
-            &&
-
-            String(item.contractAddress || "").toLowerCase() ===
-              USDT_CONTRACT
-          );
-
-        });
-
-        if (!tx) {
-
-          return callback({
-            verified: false,
-            reason: "Payment not found"
-          });
-
-        }
-
-        /*
-          Check transaction status
-        */
-        if (
-          tx.isError !== undefined &&
-          String(tx.isError) !== "0"
-        ) {
-
-          return callback({
-            verified: false,
-            reason: "Transaction failed"
-          });
-
-        }
-
-        /*
-          Calculate USDT amount
-        */
-        const decimals =
-          Number(tx.tokenDecimal || 18);
-
-        const amount =
-          Number(tx.value || 0) /
-          Math.pow(10, decimals);
-
-        /*
-          EXACTLY 0.50 USDT
-        */
-        if (
-          !Number.isFinite(amount) ||
-          Math.abs(amount - 0.50) > 0.00000001
-        ) {
-
-          return callback({
-            verified: false,
-            reason:
-              "Amount is not exactly 0.50 USDT",
-            amount: amount
-          });
-
-        }
-
-        /*
-          Payment verified
-        */
-        return callback({
-
-          verified: true,
-
-          txHash: tx.hash,
-
-          amount: amount,
-
-          from: tx.from,
-
-          to: tx.to,
-
-          blockNumber: tx.blockNumber,
-
-          confirmations:
-            tx.confirmations || "0"
-
-        });
-
-      } catch (error) {
-
-        return callback({
-          verified: false,
-          error:
-            "Could not process BscScan response"
+        callback({
+          error: "Invalid RPC response"
         });
 
       }
 
     });
 
-  }).on("error", () => {
+  });
+
+  req.on("error", () => {
 
     callback({
-      verified: false,
-      error:
-        "BscScan connection failed"
+      error: "BSC RPC connection failed"
     });
 
   });
+
+  req.write(body);
+  req.end();
+}
+
+
+/* =========================
+   VERIFY PAYMENT
+========================= */
+
+function verifyPayment(txHash, callback) {
+
+  if (!PAYMENT_WALLET) {
+
+    return callback({
+      verified: false,
+      error: "PAYMENT_WALLET is missing"
+    });
+
+  }
+
+  if (!/^0x[a-fA-F0-9]{64}$/.test(txHash)) {
+
+    return callback({
+      verified: false,
+      error: "Invalid TXID"
+    });
+
+  }
+
+
+  /* Get transaction */
+
+  rpcRequest(
+    "eth_getTransactionByHash",
+    [txHash],
+    (error, tx) => {
+
+      if (error) {
+        return callback({
+          verified: false,
+          error: error.error || "RPC error"
+        });
+      }
+
+      if (!tx) {
+
+        return callback({
+          verified: false,
+          reason: "Transaction not found"
+        });
+
+      }
+
+
+      /* Must be USDT contract */
+
+      if (
+        String(tx.to || "").toLowerCase() !==
+        USDT_CONTRACT
+      ) {
+
+        return callback({
+          verified: false,
+          reason: "Transaction is not a USDT contract transaction"
+        });
+
+      }
+
+
+      /* Get receipt */
+
+      rpcRequest(
+        "eth_getTransactionReceipt",
+        [txHash],
+        (receiptError, receipt) => {
+
+          if (receiptError) {
+
+            return callback({
+              verified: false,
+              error:
+                receiptError.error ||
+                "Could not get transaction receipt"
+            });
+
+          }
+
+          if (!receipt) {
+
+            return callback({
+              verified: false,
+              reason: "Transaction is still pending"
+            });
+
+          }
+
+
+          /* Transaction must succeed */
+
+          if (
+            String(receipt.status).toLowerCase() !==
+            "0x1"
+          ) {
+
+            return callback({
+              verified: false,
+              reason: "Transaction failed"
+            });
+
+          }
+
+
+          /*
+            Find Transfer event
+          */
+
+          const logs =
+            Array.isArray(receipt.logs)
+              ? receipt.logs
+              : [];
+
+          let payment = null;
+
+
+          for (const log of logs) {
+
+            if (
+              String(log.address || "")
+                .toLowerCase() !==
+              USDT_CONTRACT
+            ) {
+              continue;
+            }
+
+
+            if (
+              !log.topics ||
+              log.topics.length < 3
+            ) {
+              continue;
+            }
+
+
+            if (
+              String(log.topics[0]).toLowerCase() !==
+              TRANSFER_TOPIC
+            ) {
+              continue;
+            }
+
+
+            /*
+              topics[1] = from
+              topics[2] = to
+            */
+
+            const from =
+              "0x" +
+              String(log.topics[1]).slice(-40)
+                .toLowerCase();
+
+            const to =
+              "0x" +
+              String(log.topics[2]).slice(-40)
+                .toLowerCase();
+
+
+            if (
+              to !== PAYMENT_WALLET
+            ) {
+              continue;
+            }
+
+
+            /*
+              USDT on BSC uses 18 decimals.
+              0.50 USDT =
+              500000000000000000
+            */
+
+            const rawValue =
+              BigInt(
+                String(log.data || "0x0")
+              );
+
+
+            const required =
+              BigInt("500000000000000000");
+
+
+            if (rawValue !== required) {
+
+              continue;
+
+            }
+
+
+            payment = {
+
+              from: from,
+
+              to: to,
+
+              amount: 0.50,
+
+              rawValue:
+                rawValue.toString(),
+
+              blockNumber:
+                receipt.blockNumber
+
+            };
+
+            break;
+
+          }
+
+
+          if (!payment) {
+
+            return callback({
+              verified: false,
+              reason:
+                "Exact 0.50 USDT payment to payment wallet was not found"
+            });
+
+          }
+
+
+          /*
+            Payment verified
+          */
+
+          callback({
+
+            verified: true,
+
+            txHash: txHash,
+
+            amount: payment.amount,
+
+            from: payment.from,
+
+            to: payment.to,
+
+            blockNumber:
+              payment.blockNumber
+
+          });
+
+        }
+
+      );
+
+    }
+
+  );
 
 }
 
@@ -204,96 +349,95 @@ function verifyPayment(txHash, callback) {
    HTTP SERVER
 ========================= */
 
-const server = http.createServer((req, res) => {
+const server =
+  http.createServer((req, res) => {
 
-  const parsed =
-    new URL(
-      req.url,
-      `http://${req.headers.host}`
-    );
-
-
-  /* =========================
-     HOME
-  ========================= */
-
-  if (parsed.pathname === "/") {
-
-    res.writeHead(200, {
-      "Content-Type": "text/plain"
-    });
-
-    return res.end(
-      "Telegram Bot Backend is running!"
-    );
-
-  }
+    const parsed =
+      new URL(
+        req.url,
+        `http://${req.headers.host}`
+      );
 
 
-  /* =========================
-     VERIFY PAYMENT
-  ========================= */
+    /* HOME */
 
-  if (
-    parsed.pathname ===
-    "/verify-payment"
-  ) {
+    if (parsed.pathname === "/") {
 
-    const txid =
-      parsed.searchParams.get("txid");
-
-    if (!txid) {
-
-      res.writeHead(400, {
+      res.writeHead(200, {
         "Content-Type":
-          "application/json"
+          "text/plain"
       });
 
       return res.end(
-        JSON.stringify({
-          verified: false,
-          error:
-            "TXID is required"
-        })
+        "Telegram Bot Backend is running!"
       );
 
     }
 
-    verifyPayment(
-      txid,
-      (result) => {
 
-        res.writeHead(
-          result.error ? 502 : 200,
-          {
-            "Content-Type":
-              "application/json"
-          }
-        );
+    /* VERIFY PAYMENT */
 
-        res.end(
-          JSON.stringify(result)
+    if (
+      parsed.pathname ===
+      "/verify-payment"
+    ) {
+
+      const txid =
+        parsed.searchParams.get("txid");
+
+
+      if (!txid) {
+
+        res.writeHead(400, {
+          "Content-Type":
+            "application/json"
+        });
+
+        return res.end(
+          JSON.stringify({
+            verified: false,
+            error:
+              "TXID is required"
+          })
         );
 
       }
-    );
-
-    return;
-  }
 
 
-  /* =========================
-     NOT FOUND
-  ========================= */
+      verifyPayment(
+        txid,
+        (result) => {
 
-  res.writeHead(404, {
-    "Content-Type":
-      "text/plain"
+          res.writeHead(
+            result.error ? 502 : 200,
+            {
+              "Content-Type":
+                "application/json"
+            }
+          );
+
+          res.end(
+            JSON.stringify(result)
+          );
+
+        }
+      );
+
+      return;
+
+    }
+
+
+    /* NOT FOUND */
+
+    res.writeHead(404, {
+      "Content-Type":
+        "text/plain"
+    });
+
+    res.end("Not Found");
+
   });
-
-  res.end("Not Found");
-
-});
 
 
 /* =========================
