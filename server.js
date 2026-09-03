@@ -1,7 +1,14 @@
 const http = require("http");
 const https = require("https");
+const {
+  ethers
+} = require("ethers");
 
 const PORT = process.env.PORT || 3000;
+
+/* =========================
+   PAYMENT SETTINGS
+========================= */
 
 const PAYMENT_WALLET =
   (process.env.PAYMENT_WALLET || "").toLowerCase();
@@ -15,6 +22,32 @@ const USDT_CONTRACT =
 
 const TRANSFER_TOPIC =
   "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a8df523b3ef";
+
+/* =========================
+   PAYOUT SETTINGS
+========================= */
+
+const PAYOUT_WALLET =
+  (process.env.PAYOUT_WALLET || "").toLowerCase();
+
+const PAYOUT_PRIVATE_KEY =
+  process.env.PAYOUT_PRIVATE_KEY || "";
+
+const PAYOUT_API_SECRET =
+  process.env.PAYOUT_API_SECRET || "";
+
+/*
+  Prevent two payouts from being submitted
+  simultaneously by this server instance.
+*/
+let payoutBusy = false;
+
+/*
+  Test-level duplicate protection.
+  For production, we should later move this
+  to persistent database storage.
+*/
+const processedPayouts = new Set();
 
 
 /* =========================
@@ -58,7 +91,9 @@ function rpcRequest(method, params, callback) {
 
         if (json.error) {
           return callback({
-            error: json.error.message || "RPC error"
+            error:
+              json.error.message ||
+              "RPC error"
           });
         }
 
@@ -99,7 +134,8 @@ function verifyPayment(txHash, callback) {
 
     return callback({
       verified: false,
-      error: "PAYMENT_WALLET is missing"
+      error:
+        "PAYMENT_WALLET is missing"
     });
 
   }
@@ -113,32 +149,31 @@ function verifyPayment(txHash, callback) {
 
   }
 
-
-  /* Get transaction */
-
   rpcRequest(
     "eth_getTransactionByHash",
     [txHash],
     (error, tx) => {
 
       if (error) {
+
         return callback({
           verified: false,
-          error: error.error || "RPC error"
+          error:
+            error.error ||
+            "RPC error"
         });
+
       }
 
       if (!tx) {
 
         return callback({
           verified: false,
-          reason: "Transaction not found"
+          reason:
+            "Transaction not found"
         });
 
       }
-
-
-      /* Must be USDT contract */
 
       if (
         String(tx.to || "").toLowerCase() !==
@@ -147,13 +182,11 @@ function verifyPayment(txHash, callback) {
 
         return callback({
           verified: false,
-          reason: "Transaction is not a USDT contract transaction"
+          reason:
+            "Transaction is not a USDT contract transaction"
         });
 
       }
-
-
-      /* Get receipt */
 
       rpcRequest(
         "eth_getTransactionReceipt",
@@ -175,13 +208,11 @@ function verifyPayment(txHash, callback) {
 
             return callback({
               verified: false,
-              reason: "Transaction is still pending"
+              reason:
+                "Transaction is still pending"
             });
 
           }
-
-
-          /* Transaction must succeed */
 
           if (
             String(receipt.status).toLowerCase() !==
@@ -190,15 +221,11 @@ function verifyPayment(txHash, callback) {
 
             return callback({
               verified: false,
-              reason: "Transaction failed"
+              reason:
+                "Transaction failed"
             });
 
           }
-
-
-          /*
-            Find Transfer event
-          */
 
           const logs =
             Array.isArray(receipt.logs)
@@ -206,7 +233,6 @@ function verifyPayment(txHash, callback) {
               : [];
 
           let payment = null;
-
 
           for (const log of logs) {
 
@@ -218,14 +244,12 @@ function verifyPayment(txHash, callback) {
               continue;
             }
 
-
             if (
               !log.topics ||
               log.topics.length < 3
             ) {
               continue;
             }
-
 
             if (
               String(log.topics[0]).toLowerCase() !==
@@ -234,73 +258,48 @@ function verifyPayment(txHash, callback) {
               continue;
             }
 
-
-            /*
-              topics[1] = from
-              topics[2] = to
-            */
-
             const from =
               "0x" +
-              String(log.topics[1]).slice(-40)
+              String(log.topics[1])
+                .slice(-40)
                 .toLowerCase();
 
             const to =
               "0x" +
-              String(log.topics[2]).slice(-40)
+              String(log.topics[2])
+                .slice(-40)
                 .toLowerCase();
 
-
-            if (
-              to !== PAYMENT_WALLET
-            ) {
+            if (to !== PAYMENT_WALLET) {
               continue;
             }
-
-
-            /*
-              USDT on BSC uses 18 decimals.
-              0.50 USDT =
-              500000000000000000
-            */
 
             const rawValue =
               BigInt(
                 String(log.data || "0x0")
               );
 
-
             const required =
-              BigInt("500000000000000000");
-
+              BigInt(
+                "500000000000000000"
+              );
 
             if (rawValue !== required) {
-
               continue;
-
             }
 
-
             payment = {
-
               from: from,
-
               to: to,
-
               amount: 0.50,
-
               rawValue:
                 rawValue.toString(),
-
               blockNumber:
                 receipt.blockNumber
-
             };
 
             break;
-
           }
-
 
           if (!payment) {
 
@@ -311,11 +310,6 @@ function verifyPayment(txHash, callback) {
             });
 
           }
-
-
-          /*
-            Payment verified
-          */
 
           callback({
 
@@ -335,13 +329,219 @@ function verifyPayment(txHash, callback) {
           });
 
         }
-
       );
+    }
+  );
+}
+
+
+/* =========================
+   AUTOMATIC USDT PAYOUT
+========================= */
+
+async function sendPayout(
+  walletAddress,
+  amount,
+  clientOid
+) {
+
+  /* Configuration check */
+
+  if (!PAYOUT_PRIVATE_KEY) {
+    throw new Error(
+      "PAYOUT_PRIVATE_KEY is missing"
+    );
+  }
+
+  if (!PAYOUT_WALLET) {
+    throw new Error(
+      "PAYOUT_WALLET is missing"
+    );
+  }
+
+  if (!PAYOUT_API_SECRET) {
+    throw new Error(
+      "PAYOUT_API_SECRET is missing"
+    );
+  }
+
+  /* Validate destination */
+
+  if (
+    !/^0x[a-fA-F0-9]{40}$/.test(
+      walletAddress
+    )
+  ) {
+    throw new Error(
+      "Invalid payout wallet address"
+    );
+  }
+
+  /* Validate amount */
+
+  const payoutAmount =
+    Number(amount);
+
+  if (
+    !Number.isFinite(payoutAmount) ||
+    payoutAmount < 1
+  ) {
+    throw new Error(
+      "Minimum payout is 1 USDT"
+    );
+  }
+
+  /* Validate reference */
+
+  if (
+    !clientOid ||
+    String(clientOid).length < 5
+  ) {
+    throw new Error(
+      "Invalid clientOid"
+    );
+  }
+
+  const provider =
+    new ethers.JsonRpcProvider(
+      RPC_URL,
+      56
+    );
+
+  const signer =
+    new ethers.Wallet(
+      PAYOUT_PRIVATE_KEY,
+      provider
+    );
+
+  const signerAddress =
+    (
+      await signer.getAddress()
+    ).toLowerCase();
+
+  /*
+    Security check:
+    Private key must belong to the
+    configured payout wallet.
+  */
+
+  if (
+    signerAddress !==
+    PAYOUT_WALLET
+  ) {
+    throw new Error(
+      "PAYOUT_PRIVATE_KEY does not match PAYOUT_WALLET"
+    );
+  }
+
+  /* USDT contract */
+
+  const usdtAbi = [
+    "function transfer(address to, uint256 amount) returns (bool)",
+    "function balanceOf(address account) view returns (uint256)"
+  ];
+
+  const usdt =
+    new ethers.Contract(
+      USDT_CONTRACT,
+      usdtAbi,
+      signer
+    );
+
+  /* Check USDT balance */
+
+  const rawAmount =
+    ethers.parseUnits(
+      payoutAmount.toFixed(6),
+      18
+    );
+
+  const usdtBalance =
+    await usdt.balanceOf(
+      signerAddress
+    );
+
+  if (
+    usdtBalance < rawAmount
+  ) {
+    throw new Error(
+      "Payout wallet has insufficient USDT balance"
+    );
+  }
+
+  /* Send BEP-20 USDT */
+
+  const tx =
+    await usdt.transfer(
+      walletAddress,
+      rawAmount
+    );
+
+  return {
+    success: true,
+    txHash: tx.hash,
+    clientOid: String(clientOid),
+    from: signerAddress,
+    to: walletAddress,
+    amount: payoutAmount,
+    network: "BEP-20"
+  };
+}
+
+
+/* =========================
+   READ REQUEST BODY
+========================= */
+
+function readBody(req) {
+
+  return new Promise(
+    (resolve, reject) => {
+
+      let body = "";
+
+      req.on("data", (chunk) => {
+
+        body += chunk;
+
+        if (body.length > 10000) {
+          reject(
+            new Error(
+              "Request body too large"
+            )
+          );
+
+          req.destroy();
+        }
+
+      });
+
+      req.on("end", () => {
+
+        try {
+
+          resolve(
+            body
+              ? JSON.parse(body)
+              : {}
+          );
+
+        } catch (e) {
+
+          reject(
+            new Error(
+              "Invalid JSON"
+            )
+          );
+
+        }
+
+      });
+
+      req.on("error", reject);
 
     }
-
   );
-
 }
 
 
@@ -350,66 +550,246 @@ function verifyPayment(txHash, callback) {
 ========================= */
 
 const server =
-  http.createServer((req, res) => {
+  http.createServer(
+    async (req, res) => {
 
-    const parsed =
-      new URL(
-        req.url,
-        `http://${req.headers.host}`
-      );
-
-
-    /* HOME */
-
-    if (parsed.pathname === "/") {
-
-      res.writeHead(200, {
-        "Content-Type":
-          "text/plain"
-      });
-
-      return res.end(
-        "Telegram Bot Backend is running!"
-      );
-
-    }
+      const parsed =
+        new URL(
+          req.url,
+          `http://${req.headers.host}`
+        );
 
 
-    /* VERIFY PAYMENT */
+      /* HOME */
 
-    if (
-      parsed.pathname ===
-      "/verify-payment"
-    ) {
+      if (
+        req.method === "GET" &&
+        parsed.pathname === "/"
+      ) {
 
-      const txid =
-        parsed.searchParams.get("txid");
-
-
-      if (!txid) {
-
-        res.writeHead(400, {
-          "Content-Type":
-            "application/json"
-        });
+        res.writeHead(
+          200,
+          {
+            "Content-Type":
+              "text/plain"
+          }
+        );
 
         return res.end(
-          JSON.stringify({
-            verified: false,
-            error:
-              "TXID is required"
-          })
+          "Telegram Bot Backend is running!"
         );
 
       }
 
 
-      verifyPayment(
-        txid,
-        (result) => {
+      /* VERIFY PAYMENT */
+
+      if (
+        req.method === "GET" &&
+        parsed.pathname ===
+        "/verify-payment"
+      ) {
+
+        const txid =
+          parsed.searchParams.get(
+            "txid"
+          );
+
+        if (!txid) {
 
           res.writeHead(
-            result.error ? 502 : 200,
+            400,
+            {
+              "Content-Type":
+                "application/json"
+            }
+          );
+
+          return res.end(
+            JSON.stringify({
+              verified: false,
+              error:
+                "TXID is required"
+            })
+          );
+
+        }
+
+        verifyPayment(
+          txid,
+          (result) => {
+
+            res.writeHead(
+              result.error
+                ? 502
+                : 200,
+              {
+                "Content-Type":
+                  "application/json"
+              }
+            );
+
+            res.end(
+              JSON.stringify(result)
+            );
+
+          }
+        );
+
+        return;
+      }
+
+
+      /* =========================
+         PAYOUT
+      ========================= */
+
+      if (
+        req.method === "POST" &&
+        parsed.pathname === "/payout"
+      ) {
+
+        /*
+          Secret header check
+        */
+
+        const providedSecret =
+          String(
+            req.headers["x-api-secret"] ||
+            ""
+          );
+
+        if (
+          !PAYOUT_API_SECRET ||
+          providedSecret !==
+          PAYOUT_API_SECRET
+        ) {
+
+          res.writeHead(
+            401,
+            {
+              "Content-Type":
+                "application/json"
+            }
+          );
+
+          return res.end(
+            JSON.stringify({
+              success: false,
+              error:
+                "Unauthorized"
+            })
+          );
+
+        }
+
+
+        /*
+          Prevent concurrent payouts
+        */
+
+        if (payoutBusy) {
+
+          res.writeHead(
+            429,
+            {
+              "Content-Type":
+                "application/json"
+            }
+          );
+
+          return res.end(
+            JSON.stringify({
+              success: false,
+              error:
+                "Another payout is currently processing"
+            })
+          );
+
+        }
+
+
+        try {
+
+          const body =
+            await readBody(req);
+
+          const wallet =
+            String(
+              body.wallet || ""
+            ).trim();
+
+          const amount =
+            Number(body.amount);
+
+          const clientOid =
+            String(
+              body.clientOid || ""
+            ).trim();
+
+
+          /*
+            Duplicate protection
+          */
+
+          if (
+            processedPayouts.has(
+              clientOid
+            )
+          ) {
+
+            res.writeHead(
+              409,
+              {
+                "Content-Type":
+                  "application/json"
+              }
+            );
+
+            return res.end(
+              JSON.stringify({
+                success: false,
+                error:
+                  "This payout was already processed"
+              })
+            );
+
+          }
+
+
+          payoutBusy = true;
+
+          console.log(
+            "Payout requested:",
+            {
+              wallet: wallet,
+              amount: amount,
+              clientOid: clientOid
+            }
+          );
+
+
+          const result =
+            await sendPayout(
+              wallet,
+              amount,
+              clientOid
+            );
+
+
+          processedPayouts.add(
+            clientOid
+          );
+
+
+          console.log(
+            "Payout sent:",
+            result
+          );
+
+
+          res.writeHead(
+            200,
             {
               "Content-Type":
                 "application/json"
@@ -420,24 +800,57 @@ const server =
             JSON.stringify(result)
           );
 
+        } catch (error) {
+
+          console.error(
+            "Payout error:",
+            error.message
+          );
+
+
+          res.writeHead(
+            400,
+            {
+              "Content-Type":
+                "application/json"
+            }
+          );
+
+          res.end(
+            JSON.stringify({
+              success: false,
+              error:
+                error.message ||
+                "Payout failed"
+            })
+          );
+
+        } finally {
+
+          payoutBusy = false;
+
+        }
+
+        return;
+      }
+
+
+      /* NOT FOUND */
+
+      res.writeHead(
+        404,
+        {
+          "Content-Type":
+            "text/plain"
         }
       );
 
-      return;
+      res.end(
+        "Not Found"
+      );
 
     }
-
-
-    /* NOT FOUND */
-
-    res.writeHead(404, {
-      "Content-Type":
-        "text/plain"
-    });
-
-    res.end("Not Found");
-
-  });
+  );
 
 
 /* =========================
