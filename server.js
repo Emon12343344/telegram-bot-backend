@@ -1,8 +1,6 @@
 const http = require("http");
 const https = require("https");
-const {
-  ethers
-} = require("ethers");
+const { ethers } = require("ethers");
 
 const PORT = process.env.PORT || 3000;
 
@@ -10,8 +8,9 @@ const PORT = process.env.PORT || 3000;
    PAYMENT SETTINGS
 ========================= */
 
+// আপনার DP / PAYMENT address
 const PAYMENT_WALLET =
-  (process.env.PAYMENT_WALLET || "").toLowerCase();
+  "0x07207Bf282B4e3dc2db376F29e40bfbc7d61607B".toLowerCase();
 
 const RPC_URL =
   "https://bsc-dataseed.bnbchain.org";
@@ -22,6 +21,7 @@ const USDT_CONTRACT =
 
 const TRANSFER_TOPIC =
   "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a8df523b3ef";
+
 
 /* =========================
    PAYOUT SETTINGS
@@ -36,16 +36,29 @@ const PAYOUT_PRIVATE_KEY =
 const PAYOUT_API_SECRET =
   process.env.PAYOUT_API_SECRET || "";
 
-/*
-  Prevent two payouts from being submitted
-  simultaneously by this server instance.
-*/
-let payoutBusy = false;
 
 /*
-  Test-level duplicate protection.
-  For production, we should later move this
-  to persistent database storage.
+  Minimum withdrawal comes from Railway.
+  Example:
+  MIN_WITHDRAW=0.15
+*/
+let MIN_WITHDRAW =
+  Number(process.env.MIN_WITHDRAW || 0.15);
+
+if (
+  !Number.isFinite(MIN_WITHDRAW) ||
+  MIN_WITHDRAW <= 0
+) {
+  MIN_WITHDRAW = 0.15;
+}
+
+
+let payoutBusy = false;
+
+
+/*
+  Duplicate protection.
+  This is memory-based and resets after restart.
 */
 const processedPayouts = new Set();
 
@@ -69,52 +82,60 @@ function rpcRequest(method, params, callback) {
     hostname: url.hostname,
     path: url.pathname,
     method: "POST",
+
     headers: {
       "Content-Type": "application/json",
       "Content-Length": Buffer.byteLength(body)
     }
   };
 
-  const req = https.request(options, (res) => {
+  const req = https.request(
+    options,
+    (res) => {
 
-    let data = "";
+      let data = "";
 
-    res.on("data", (chunk) => {
-      data += chunk;
-    });
+      res.on("data", (chunk) => {
+        data += chunk;
+      });
 
-    res.on("end", () => {
+      res.on("end", () => {
 
-      try {
+        try {
 
-        const json = JSON.parse(data);
+          const json = JSON.parse(data);
 
-        if (json.error) {
-          return callback({
+          if (json.error) {
+
+            return callback({
+              error:
+                json.error.message ||
+                "RPC error"
+            });
+
+          }
+
+          callback(null, json.result);
+
+        } catch (e) {
+
+          callback({
             error:
-              json.error.message ||
-              "RPC error"
+              "Invalid RPC response"
           });
+
         }
 
-        callback(null, json.result);
+      });
 
-      } catch (e) {
-
-        callback({
-          error: "Invalid RPC response"
-        });
-
-      }
-
-    });
-
-  });
+    }
+  );
 
   req.on("error", () => {
 
     callback({
-      error: "BSC RPC connection failed"
+      error:
+        "BSC RPC connection failed"
     });
 
   });
@@ -140,14 +161,19 @@ function verifyPayment(txHash, callback) {
 
   }
 
-  if (!/^0x[a-fA-F0-9]{64}$/.test(txHash)) {
+
+  if (
+    !/^0x[a-fA-F0-9]{64}$/.test(txHash)
+  ) {
 
     return callback({
       verified: false,
-      error: "Invalid TXID"
+      error:
+        "Invalid TXID"
     });
 
   }
+
 
   rpcRequest(
     "eth_getTransactionByHash",
@@ -165,6 +191,7 @@ function verifyPayment(txHash, callback) {
 
       }
 
+
       if (!tx) {
 
         return callback({
@@ -174,6 +201,7 @@ function verifyPayment(txHash, callback) {
         });
 
       }
+
 
       if (
         String(tx.to || "").toLowerCase() !==
@@ -187,6 +215,7 @@ function verifyPayment(txHash, callback) {
         });
 
       }
+
 
       rpcRequest(
         "eth_getTransactionReceipt",
@@ -204,6 +233,7 @@ function verifyPayment(txHash, callback) {
 
           }
 
+
           if (!receipt) {
 
             return callback({
@@ -213,6 +243,7 @@ function verifyPayment(txHash, callback) {
             });
 
           }
+
 
           if (
             String(receipt.status).toLowerCase() !==
@@ -227,14 +258,19 @@ function verifyPayment(txHash, callback) {
 
           }
 
+
           const logs =
             Array.isArray(receipt.logs)
               ? receipt.logs
               : [];
 
+
           let payment = null;
 
-          for (const log of logs) {
+
+          for (
+            const log of logs
+          ) {
 
             if (
               String(log.address || "")
@@ -244,12 +280,14 @@ function verifyPayment(txHash, callback) {
               continue;
             }
 
+
             if (
               !log.topics ||
               log.topics.length < 3
             ) {
               continue;
             }
+
 
             if (
               String(log.topics[0]).toLowerCase() !==
@@ -258,11 +296,13 @@ function verifyPayment(txHash, callback) {
               continue;
             }
 
+
             const from =
               "0x" +
               String(log.topics[1])
                 .slice(-40)
                 .toLowerCase();
+
 
             const to =
               "0x" +
@@ -270,46 +310,75 @@ function verifyPayment(txHash, callback) {
                 .slice(-40)
                 .toLowerCase();
 
-            if (to !== PAYMENT_WALLET) {
+
+            if (
+              to !== PAYMENT_WALLET
+            ) {
               continue;
             }
+
 
             const rawValue =
               BigInt(
                 String(log.data || "0x0")
               );
 
-            const required =
-              BigInt(
-                "500000000000000000"
-              );
 
-            if (rawValue !== required) {
+            /*
+              Payment amount is determined
+              by the transaction itself.
+              Admin-side plan verification
+              should be handled by the bot.
+            */
+
+            const decimals = 18;
+
+            const amount =
+              Number(rawValue) /
+              Math.pow(10, decimals);
+
+
+            if (
+              !Number.isFinite(amount) ||
+              amount <= 0
+            ) {
               continue;
             }
 
+
             payment = {
+
               from: from,
+
               to: to,
-              amount: 0.50,
+
+              amount: amount,
+
               rawValue:
                 rawValue.toString(),
+
               blockNumber:
                 receipt.blockNumber
+
             };
 
+
             break;
+
           }
+
 
           if (!payment) {
 
             return callback({
               verified: false,
+
               reason:
-                "Exact 0.50 USDT payment to payment wallet was not found"
+                "USDT payment to payment wallet was not found"
             });
 
           }
+
 
           callback({
 
@@ -317,11 +386,14 @@ function verifyPayment(txHash, callback) {
 
             txHash: txHash,
 
-            amount: payment.amount,
+            amount:
+              payment.amount,
 
-            from: payment.from,
+            from:
+              payment.from,
 
-            to: payment.to,
+            to:
+              payment.to,
 
             blockNumber:
               payment.blockNumber
@@ -330,6 +402,7 @@ function verifyPayment(txHash, callback) {
 
         }
       );
+
     }
   );
 }
@@ -345,62 +418,96 @@ async function sendPayout(
   clientOid
 ) {
 
-  /* Configuration check */
+
+  /* Configuration */
 
   if (!PAYOUT_PRIVATE_KEY) {
+
     throw new Error(
       "PAYOUT_PRIVATE_KEY is missing"
     );
+
   }
 
+
   if (!PAYOUT_WALLET) {
+
     throw new Error(
       "PAYOUT_WALLET is missing"
     );
+
   }
 
+
   if (!PAYOUT_API_SECRET) {
+
     throw new Error(
       "PAYOUT_API_SECRET is missing"
     );
+
   }
 
-  /* Validate destination */
+
+  /* Destination validation */
 
   if (
     !/^0x[a-fA-F0-9]{40}$/.test(
       walletAddress
     )
   ) {
+
     throw new Error(
       "Invalid payout wallet address"
     );
+
   }
 
-  /* Validate amount */
+
+  /* Amount validation */
 
   const payoutAmount =
     Number(amount);
 
+
   if (
-    !Number.isFinite(payoutAmount) ||
-    payoutAmount < 0.15
+    !Number.isFinite(payoutAmount)
   ) {
+
     throw new Error(
-      "Minimum payout is 0.15 USDT"
+      "Invalid payout amount"
     );
+
   }
 
-  /* Validate reference */
+
+  if (
+    payoutAmount < MIN_WITHDRAW
+  ) {
+
+    throw new Error(
+      "Minimum payout is " +
+      MIN_WITHDRAW +
+      " USDT"
+    );
+
+  }
+
+
+  /* Reference validation */
 
   if (
     !clientOid ||
     String(clientOid).length < 5
   ) {
+
     throw new Error(
       "Invalid clientOid"
     );
+
   }
+
+
+  /* BSC provider */
 
   const provider =
     new ethers.JsonRpcProvider(
@@ -408,38 +515,50 @@ async function sendPayout(
       56
     );
 
+
+  /* Payout signer */
+
   const signer =
     new ethers.Wallet(
       PAYOUT_PRIVATE_KEY,
       provider
     );
 
+
   const signerAddress =
     (
       await signer.getAddress()
     ).toLowerCase();
 
+
   /*
-    Security check:
-    Private key must belong to the
-    configured payout wallet.
+    Security:
+    Private key must match
+    PAYOUT_WALLET.
   */
 
   if (
     signerAddress !==
     PAYOUT_WALLET
   ) {
+
     throw new Error(
       "PAYOUT_PRIVATE_KEY does not match PAYOUT_WALLET"
     );
+
   }
+
 
   /* USDT contract */
 
   const usdtAbi = [
+
     "function transfer(address to, uint256 amount) returns (bool)",
+
     "function balanceOf(address account) view returns (uint256)"
+
   ];
+
 
   const usdt =
     new ethers.Contract(
@@ -448,7 +567,8 @@ async function sendPayout(
       signer
     );
 
-  /* Check USDT balance */
+
+  /* USDT balance */
 
   const rawAmount =
     ethers.parseUnits(
@@ -456,18 +576,23 @@ async function sendPayout(
       18
     );
 
+
   const usdtBalance =
     await usdt.balanceOf(
       signerAddress
     );
 
+
   if (
     usdtBalance < rawAmount
   ) {
+
     throw new Error(
       "Payout wallet has insufficient USDT balance"
     );
+
   }
+
 
   /* Send BEP-20 USDT */
 
@@ -477,15 +602,52 @@ async function sendPayout(
       rawAmount
     );
 
+
+  /*
+    Wait for confirmation before
+    returning success.
+  */
+
+  const receipt =
+    await tx.wait();
+
+
+  if (
+    !receipt ||
+    receipt.status !== 1
+  ) {
+
+    throw new Error(
+      "Payout transaction failed"
+    );
+
+  }
+
+
   return {
+
     success: true,
-    txHash: tx.hash,
-    clientOid: String(clientOid),
-    from: signerAddress,
-    to: walletAddress,
-    amount: payoutAmount,
-    network: "BEP-20"
+
+    txHash:
+      tx.hash,
+
+    clientOid:
+      String(clientOid),
+
+    from:
+      signerAddress,
+
+    to:
+      walletAddress,
+
+    amount:
+      payoutAmount,
+
+    network:
+      "BEP-20"
+
   };
+
 }
 
 
@@ -500,48 +662,66 @@ function readBody(req) {
 
       let body = "";
 
-      req.on("data", (chunk) => {
 
-        body += chunk;
+      req.on(
+        "data",
+        (chunk) => {
 
-        if (body.length > 10000) {
-          reject(
-            new Error(
-              "Request body too large"
-            )
-          );
+          body += chunk;
 
-          req.destroy();
-        }
 
-      });
+          if (
+            body.length > 10000
+          ) {
 
-      req.on("end", () => {
+            reject(
+              new Error(
+                "Request body too large"
+              )
+            );
 
-        try {
+            req.destroy();
 
-          resolve(
-            body
-              ? JSON.parse(body)
-              : {}
-          );
-
-        } catch (e) {
-
-          reject(
-            new Error(
-              "Invalid JSON"
-            )
-          );
+          }
 
         }
+      );
 
-      });
 
-      req.on("error", reject);
+      req.on(
+        "end",
+        () => {
+
+          try {
+
+            resolve(
+              body
+                ? JSON.parse(body)
+                : {}
+            );
+
+          } catch (e) {
+
+            reject(
+              new Error(
+                "Invalid JSON"
+              )
+            );
+
+          }
+
+        }
+      );
+
+
+      req.on(
+        "error",
+        reject
+      );
 
     }
   );
+
 }
 
 
@@ -553,6 +733,7 @@ const server =
   http.createServer(
     async (req, res) => {
 
+
       const parsed =
         new URL(
           req.url,
@@ -560,7 +741,9 @@ const server =
         );
 
 
-      /* HOME */
+      /* =========================
+         HOME
+      ========================= */
 
       if (
         req.method === "GET" &&
@@ -575,6 +758,7 @@ const server =
           }
         );
 
+
         return res.end(
           "Telegram Bot Backend is running!"
         );
@@ -582,7 +766,9 @@ const server =
       }
 
 
-      /* VERIFY PAYMENT */
+      /* =========================
+         VERIFY PAYMENT
+      ========================= */
 
       if (
         req.method === "GET" &&
@@ -590,10 +776,12 @@ const server =
         "/verify-payment"
       ) {
 
+
         const txid =
           parsed.searchParams.get(
             "txid"
           );
+
 
         if (!txid) {
 
@@ -605,29 +793,38 @@ const server =
             }
           );
 
+
           return res.end(
             JSON.stringify({
-              verified: false,
+
+              verified:
+                false,
+
               error:
                 "TXID is required"
+
             })
           );
 
         }
 
+
         verifyPayment(
           txid,
           (result) => {
+
 
             res.writeHead(
               result.error
                 ? 502
                 : 200,
+
               {
                 "Content-Type":
                   "application/json"
               }
             );
+
 
             res.end(
               JSON.stringify(result)
@@ -636,7 +833,9 @@ const server =
           }
         );
 
+
         return;
+
       }
 
 
@@ -649,15 +848,16 @@ const server =
         parsed.pathname === "/payout"
       ) {
 
-        /*
-          Secret header check
-        */
+
+        /* Secret */
 
         const providedSecret =
           String(
-            req.headers["x-api-secret"] ||
-            ""
+            req.headers[
+              "x-api-secret"
+            ] || ""
           );
+
 
         if (
           !PAYOUT_API_SECRET ||
@@ -673,20 +873,23 @@ const server =
             }
           );
 
+
           return res.end(
             JSON.stringify({
-              success: false,
+
+              success:
+                false,
+
               error:
                 "Unauthorized"
+
             })
           );
 
         }
 
 
-        /*
-          Prevent concurrent payouts
-        */
+        /* Busy protection */
 
         if (payoutBusy) {
 
@@ -698,11 +901,16 @@ const server =
             }
           );
 
+
           return res.end(
             JSON.stringify({
-              success: false,
+
+              success:
+                false,
+
               error:
                 "Another payout is currently processing"
+
             })
           );
 
@@ -711,16 +919,22 @@ const server =
 
         try {
 
+
           const body =
             await readBody(req);
+
 
           const wallet =
             String(
               body.wallet || ""
             ).trim();
 
+
           const amount =
-            Number(body.amount);
+            Number(
+              body.amount
+            );
+
 
           const clientOid =
             String(
@@ -728,9 +942,18 @@ const server =
             ).trim();
 
 
-          /*
-            Duplicate protection
-          */
+          /* Duplicate protection */
+
+          if (
+            !clientOid
+          ) {
+
+            throw new Error(
+              "clientOid is required"
+            );
+
+          }
+
 
           if (
             processedPayouts.has(
@@ -746,11 +969,16 @@ const server =
               }
             );
 
+
             return res.end(
               JSON.stringify({
-                success: false,
+
+                success:
+                  false,
+
                 error:
                   "This payout was already processed"
+
               })
             );
 
@@ -759,12 +987,21 @@ const server =
 
           payoutBusy = true;
 
+
           console.log(
             "Payout requested:",
             {
-              wallet: wallet,
-              amount: amount,
-              clientOid: clientOid
+              wallet:
+                wallet,
+
+              amount:
+                amount,
+
+              clientOid:
+                clientOid,
+
+              minimum:
+                MIN_WITHDRAW
             }
           );
 
@@ -796,11 +1033,14 @@ const server =
             }
           );
 
+
           res.end(
             JSON.stringify(result)
           );
 
+
         } catch (error) {
+
 
           console.error(
             "Payout error:",
@@ -816,14 +1056,20 @@ const server =
             }
           );
 
+
           res.end(
             JSON.stringify({
-              success: false,
+
+              success:
+                false,
+
               error:
                 error.message ||
                 "Payout failed"
+
             })
           );
+
 
         } finally {
 
@@ -831,11 +1077,15 @@ const server =
 
         }
 
+
         return;
+
       }
 
 
-      /* NOT FOUND */
+      /* =========================
+         NOT FOUND
+      ========================= */
 
       res.writeHead(
         404,
@@ -844,6 +1094,7 @@ const server =
             "text/plain"
         }
       );
+
 
       res.end(
         "Not Found"
@@ -864,6 +1115,22 @@ server.listen(
 
     console.log(
       `Server running on port ${PORT}`
+    );
+
+    console.log(
+      "Payment wallet:",
+      PAYMENT_WALLET
+    );
+
+    console.log(
+      "Payout wallet:",
+      PAYOUT_WALLET
+    );
+
+    console.log(
+      "Minimum withdraw:",
+      MIN_WITHDRAW,
+      "USDT"
     );
 
   }
