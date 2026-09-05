@@ -384,10 +384,10 @@ async function sendPayout(
 
   if (
     !Number.isFinite(payoutAmount) ||
-    payoutAmount < 1
+    payoutAmount < 0.15
   ) {
     throw new Error(
-      "Minimum payout is 1 USDT"
+      "Minimum payout is 0.15 USDT"
     );
   }
 
