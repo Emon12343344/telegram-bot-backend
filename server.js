@@ -8,7 +8,6 @@ const PORT = process.env.PORT || 3000;
    PAYMENT SETTINGS
 ========================= */
 
-// আপনার DP / PAYMENT address
 const PAYMENT_WALLET =
   "0x07207Bf282B4e3dc2db376F29e40bfbc7d61607B".toLowerCase();
 
@@ -36,12 +35,6 @@ const PAYOUT_PRIVATE_KEY =
 const PAYOUT_API_SECRET =
   process.env.PAYOUT_API_SECRET || "";
 
-
-/*
-  Minimum withdrawal comes from Railway.
-  Example:
-  MIN_WITHDRAW=0.15
-*/
 let MIN_WITHDRAW =
   Number(process.env.MIN_WITHDRAW || 0.15);
 
@@ -52,13 +45,12 @@ if (
   MIN_WITHDRAW = 0.15;
 }
 
-
 let payoutBusy = false;
 
 
 /*
   Duplicate protection.
-  This is memory-based and resets after restart.
+  Note: resets after Railway restart.
 */
 const processedPayouts = new Set();
 
@@ -147,6 +139,7 @@ function rpcRequest(method, params, callback) {
 
 /* =========================
    VERIFY PAYMENT
+   FIXED VERSION
 ========================= */
 
 function verifyPayment(txHash, callback) {
@@ -161,7 +154,6 @@ function verifyPayment(txHash, callback) {
 
   }
 
-
   if (
     !/^0x[a-fA-F0-9]{64}$/.test(txHash)
   ) {
@@ -174,6 +166,10 @@ function verifyPayment(txHash, callback) {
 
   }
 
+
+  /* =========================
+     GET TRANSACTION
+  ========================= */
 
   rpcRequest(
     "eth_getTransactionByHash",
@@ -191,7 +187,6 @@ function verifyPayment(txHash, callback) {
 
       }
 
-
       if (!tx) {
 
         return callback({
@@ -203,19 +198,9 @@ function verifyPayment(txHash, callback) {
       }
 
 
-      if (
-        String(tx.to || "").toLowerCase() !==
-        USDT_CONTRACT
-      ) {
-
-        return callback({
-          verified: false,
-          reason:
-            "Transaction is not a USDT contract transaction"
-        });
-
-      }
-
+      /* =========================
+         GET RECEIPT
+      ========================= */
 
       rpcRequest(
         "eth_getTransactionReceipt",
@@ -233,7 +218,6 @@ function verifyPayment(txHash, callback) {
 
           }
 
-
           if (!receipt) {
 
             return callback({
@@ -244,6 +228,10 @@ function verifyPayment(txHash, callback) {
 
           }
 
+
+          /* =========================
+             CHECK TRANSACTION STATUS
+          ========================= */
 
           if (
             String(receipt.status).toLowerCase() !==
@@ -259,11 +247,14 @@ function verifyPayment(txHash, callback) {
           }
 
 
+          /* =========================
+             FIND USDT TRANSFER EVENT
+          ========================= */
+
           const logs =
             Array.isArray(receipt.logs)
               ? receipt.logs
               : [];
-
 
           let payment = null;
 
@@ -271,6 +262,8 @@ function verifyPayment(txHash, callback) {
           for (
             const log of logs
           ) {
+
+            /* Must be BSC USDT contract */
 
             if (
               String(log.address || "")
@@ -280,6 +273,8 @@ function verifyPayment(txHash, callback) {
               continue;
             }
 
+
+            /* Must be Transfer event */
 
             if (
               !log.topics ||
@@ -297,12 +292,20 @@ function verifyPayment(txHash, callback) {
             }
 
 
+            /* =========================
+               FROM
+            ========================= */
+
             const from =
               "0x" +
               String(log.topics[1])
                 .slice(-40)
                 .toLowerCase();
 
+
+            /* =========================
+               TO
+            ========================= */
 
             const to =
               "0x" +
@@ -311,6 +314,8 @@ function verifyPayment(txHash, callback) {
                 .toLowerCase();
 
 
+            /* Must be our payment wallet */
+
             if (
               to !== PAYMENT_WALLET
             ) {
@@ -318,24 +323,28 @@ function verifyPayment(txHash, callback) {
             }
 
 
+            /* =========================
+               AMOUNT
+            ========================= */
+
             const rawValue =
               BigInt(
                 String(log.data || "0x0")
               );
 
 
-            /*
-              Payment amount is determined
-              by the transaction itself.
-              Admin-side plan verification
-              should be handled by the bot.
-            */
+            if (rawValue <= 0n) {
+              continue;
+            }
 
-            const decimals = 18;
+
+            /*
+              BSC USDT uses 18 decimals
+            */
 
             const amount =
               Number(rawValue) /
-              Math.pow(10, decimals);
+              Math.pow(10, 18);
 
 
             if (
@@ -348,11 +357,14 @@ function verifyPayment(txHash, callback) {
 
             payment = {
 
-              from: from,
+              from:
+                from,
 
-              to: to,
+              to:
+                to,
 
-              amount: amount,
+              amount:
+                amount,
 
               rawValue:
                 rawValue.toString(),
@@ -364,27 +376,39 @@ function verifyPayment(txHash, callback) {
 
 
             break;
-
           }
 
+
+          /* =========================
+             PAYMENT NOT FOUND
+          ========================= */
 
           if (!payment) {
 
             return callback({
-              verified: false,
+
+              verified:
+                false,
 
               reason:
-                "USDT payment to payment wallet was not found"
+                "Official BEP-20 USDT transfer to payment wallet was not found"
+
             });
 
           }
 
 
-          callback({
+          /* =========================
+             PAYMENT VERIFIED
+          ========================= */
 
-            verified: true,
+          return callback({
 
-            txHash: txHash,
+            verified:
+              true,
+
+            txHash:
+              txHash,
 
             amount:
               payment.amount,
@@ -418,8 +442,9 @@ async function sendPayout(
   clientOid
 ) {
 
-
-  /* Configuration */
+  /* =========================
+     CONFIGURATION
+  ========================= */
 
   if (!PAYOUT_PRIVATE_KEY) {
 
@@ -429,7 +454,6 @@ async function sendPayout(
 
   }
 
-
   if (!PAYOUT_WALLET) {
 
     throw new Error(
@@ -437,7 +461,6 @@ async function sendPayout(
     );
 
   }
-
 
   if (!PAYOUT_API_SECRET) {
 
@@ -448,7 +471,9 @@ async function sendPayout(
   }
 
 
-  /* Destination validation */
+  /* =========================
+     WALLET VALIDATION
+  ========================= */
 
   if (
     !/^0x[a-fA-F0-9]{40}$/.test(
@@ -463,11 +488,12 @@ async function sendPayout(
   }
 
 
-  /* Amount validation */
+  /* =========================
+     AMOUNT VALIDATION
+  ========================= */
 
   const payoutAmount =
     Number(amount);
-
 
   if (
     !Number.isFinite(payoutAmount)
@@ -478,7 +504,6 @@ async function sendPayout(
     );
 
   }
-
 
   if (
     payoutAmount < MIN_WITHDRAW
@@ -493,7 +518,9 @@ async function sendPayout(
   }
 
 
-  /* Reference validation */
+  /* =========================
+     CLIENT OID
+  ========================= */
 
   if (
     !clientOid ||
@@ -507,7 +534,9 @@ async function sendPayout(
   }
 
 
-  /* BSC provider */
+  /* =========================
+     BSC PROVIDER
+  ========================= */
 
   const provider =
     new ethers.JsonRpcProvider(
@@ -516,7 +545,9 @@ async function sendPayout(
     );
 
 
-  /* Payout signer */
+  /* =========================
+     PAYOUT SIGNER
+  ========================= */
 
   const signer =
     new ethers.Wallet(
@@ -531,11 +562,9 @@ async function sendPayout(
     ).toLowerCase();
 
 
-  /*
-    Security:
-    Private key must match
-    PAYOUT_WALLET.
-  */
+  /* =========================
+     PRIVATE KEY CHECK
+  ========================= */
 
   if (
     signerAddress !==
@@ -549,7 +578,9 @@ async function sendPayout(
   }
 
 
-  /* USDT contract */
+  /* =========================
+     USDT CONTRACT
+  ========================= */
 
   const usdtAbi = [
 
@@ -568,7 +599,9 @@ async function sendPayout(
     );
 
 
-  /* USDT balance */
+  /* =========================
+     USDT BALANCE
+  ========================= */
 
   const rawAmount =
     ethers.parseUnits(
@@ -594,7 +627,9 @@ async function sendPayout(
   }
 
 
-  /* Send BEP-20 USDT */
+  /* =========================
+     SEND USDT
+  ========================= */
 
   const tx =
     await usdt.transfer(
@@ -603,10 +638,9 @@ async function sendPayout(
     );
 
 
-  /*
-    Wait for confirmation before
-    returning success.
-  */
+  /* =========================
+     WAIT CONFIRMATION
+  ========================= */
 
   const receipt =
     await tx.wait();
@@ -626,7 +660,8 @@ async function sendPayout(
 
   return {
 
-    success: true,
+    success:
+      true,
 
     txHash:
       tx.hash,
@@ -733,7 +768,6 @@ const server =
   http.createServer(
     async (req, res) => {
 
-
       const parsed =
         new URL(
           req.url,
@@ -758,7 +792,6 @@ const server =
           }
         );
 
-
         return res.end(
           "Telegram Bot Backend is running!"
         );
@@ -776,7 +809,6 @@ const server =
         "/verify-payment"
       ) {
 
-
         const txid =
           parsed.searchParams.get(
             "txid"
@@ -792,7 +824,6 @@ const server =
                 "application/json"
             }
           );
-
 
           return res.end(
             JSON.stringify({
@@ -812,7 +843,6 @@ const server =
         verifyPayment(
           txid,
           (result) => {
-
 
             res.writeHead(
               result.error
@@ -847,9 +877,6 @@ const server =
         req.method === "POST" &&
         parsed.pathname === "/payout"
       ) {
-
-
-        /* Secret */
 
         const providedSecret =
           String(
@@ -889,7 +916,9 @@ const server =
         }
 
 
-        /* Busy protection */
+        /* =========================
+           BUSY PROTECTION
+        ========================= */
 
         if (payoutBusy) {
 
@@ -919,7 +948,6 @@ const server =
 
         try {
 
-
           const body =
             await readBody(req);
 
@@ -942,7 +970,9 @@ const server =
             ).trim();
 
 
-          /* Duplicate protection */
+          /* =========================
+             CLIENT OID CHECK
+          ========================= */
 
           if (
             !clientOid
@@ -954,6 +984,10 @@ const server =
 
           }
 
+
+          /* =========================
+             DUPLICATE CHECK
+          ========================= */
 
           if (
             processedPayouts.has(
@@ -1040,7 +1074,6 @@ const server =
 
 
         } catch (error) {
-
 
           console.error(
             "Payout error:",
