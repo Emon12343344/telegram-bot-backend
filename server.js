@@ -4,9 +4,9 @@ const { ethers } = require("ethers");
 
 const PORT = process.env.PORT || 3000;
 
-/* =========================
+/* =========================================================
    PAYMENT SETTINGS
-========================= */
+========================================================= */
 
 const PAYMENT_WALLET =
   "0x07207Bf282B4e3dc2db376F29e40bfbc7d61607B".toLowerCase();
@@ -17,16 +17,13 @@ const RPC_URL =
 const USDT_CONTRACT =
   "0x55d398326f99059ff775485246999027b3197955".toLowerCase();
 
-/*
-   Standard ERC20/BEP20 Transfer event
-*/
 const TRANSFER_TOPIC =
-  "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a8df523b3ef";
+  "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 
 
-/* =========================
+/* =========================================================
    PAYOUT SETTINGS
-========================= */
+========================================================= */
 
 const PAYOUT_WALLET =
   String(process.env.PAYOUT_WALLET || "").toLowerCase();
@@ -47,100 +44,119 @@ if (
   MIN_WITHDRAW = 0.15;
 }
 
+
 let payoutBusy = false;
 
-const processedPayouts = new Set();
+const processedPayouts =
+  new Set();
 
 
-/* =========================
+/* =========================================================
    RPC REQUEST
-========================= */
+========================================================= */
 
 function rpcRequest(method, params, callback) {
 
-  const body = JSON.stringify({
-    jsonrpc: "2.0",
-    id: 1,
-    method: method,
-    params: params
-  });
+  const body =
+    JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: method,
+      params: params
+    });
 
-  const url = new URL(RPC_URL);
+  const url =
+    new URL(RPC_URL);
 
   const options = {
     hostname: url.hostname,
     path: url.pathname,
     method: "POST",
-
     headers: {
       "Content-Type": "application/json",
-      "Content-Length": Buffer.byteLength(body)
+      "Content-Length":
+        Buffer.byteLength(body)
     }
   };
 
-  const req = https.request(
-    options,
-    (res) => {
+  const req =
+    https.request(
+      options,
+      (res) => {
 
-      let data = "";
+        let data = "";
 
-      res.on("data", (chunk) => {
-        data += chunk;
-      });
+        res.on(
+          "data",
+          (chunk) => {
+            data += chunk;
+          }
+        );
 
-      res.on("end", () => {
+        res.on(
+          "end",
+          () => {
 
-        try {
+            try {
 
-          const json = JSON.parse(data);
+              const json =
+                JSON.parse(data);
 
-          if (json.error) {
+              if (json.error) {
 
-            return callback({
-              error:
-                json.error.message ||
-                "RPC error"
-            });
+                return callback({
+                  error:
+                    json.error.message ||
+                    "RPC error"
+                });
+
+              }
+
+              callback(
+                null,
+                json.result
+              );
+
+            } catch (e) {
+
+              callback({
+                error:
+                  "Invalid RPC response"
+              });
+
+            }
 
           }
+        );
 
-          callback(null, json.result);
+      }
+    );
 
-        } catch (e) {
+  req.on(
+    "error",
+    () => {
 
-          callback({
-            error:
-              "Invalid RPC response"
-          });
-
-        }
-
+      callback({
+        error:
+          "BSC RPC connection failed"
       });
 
     }
   );
-
-  req.on("error", () => {
-
-    callback({
-      error:
-        "BSC RPC connection failed"
-    });
-
-  });
 
   req.write(body);
   req.end();
 }
 
 
-/* =========================
+/* =========================================================
    VERIFY PAYMENT
-========================= */
+========================================================= */
 
-function verifyPayment(txHash, callback) {
-
-  txHash = String(txHash || "").trim();
+function verifyPayment(
+  txHash,
+  callback
+) {
 
   if (
     !/^0x[a-fA-F0-9]{64}$/.test(txHash)
@@ -148,287 +164,285 @@ function verifyPayment(txHash, callback) {
 
     return callback({
       verified: false,
-      reason: "Invalid TXID"
+      reason:
+        "Invalid TXID"
     });
 
   }
 
 
-  /* =========================
-     GET TRANSACTION RECEIPT
-  ========================= */
+  /* -------------------------------------------------------
+     GET TRANSACTION
+  ------------------------------------------------------- */
 
   rpcRequest(
-    "eth_getTransactionReceipt",
+    "eth_getTransactionByHash",
     [txHash],
-    (receiptError, receipt) => {
+    (error, tx) => {
 
-      if (receiptError) {
+      if (error) {
 
         return callback({
           verified: false,
-          reason:
-            receiptError.error ||
-            "Could not connect to BSC RPC"
+          error:
+            error.error ||
+            "RPC error"
         });
 
       }
 
 
-      if (!receipt) {
+      if (!tx) {
 
         return callback({
           verified: false,
           reason:
-            "Transaction not found or still pending"
+            "Transaction not found"
         });
 
       }
 
 
-      /* =========================
-         TRANSACTION STATUS
-      ========================= */
+      /* ---------------------------------------------------
+         IMPORTANT:
 
-      if (
-        String(receipt.status).toLowerCase() !==
-        "0x1"
-      ) {
+         এখানে আর tx.to == USDT_CONTRACT check করা হচ্ছে না।
 
-        return callback({
-          verified: false,
-          reason:
-            "Transaction failed"
-        });
-
-      }
+         কারণ payment-এর আসল USDT transfer
+         transaction receipt-এর event logs-এ পাওয়া যায়।
+      --------------------------------------------------- */
 
 
-      /* =========================
-         FIND USDT TRANSFER
-      ========================= */
-
-      const logs =
-        Array.isArray(receipt.logs)
-          ? receipt.logs
-          : [];
-
-      let payment = null;
-
-
-      for (
-        const log of logs
-      ) {
-
-        /* Must be BSC USDT contract */
-
-        if (
-          String(log.address || "")
-            .toLowerCase() !==
-          USDT_CONTRACT
-        ) {
-          continue;
-        }
-
-
-        /* Must be Transfer event */
-
-        if (
-          !Array.isArray(log.topics) ||
-          log.topics.length < 3
-        ) {
-          continue;
-        }
-
-
-        if (
-          String(log.topics[0]).toLowerCase() !==
-          TRANSFER_TOPIC
-        ) {
-          continue;
-        }
-
-
-        /* From */
-
-        const from =
-          "0x" +
-          String(log.topics[1])
-            .slice(-40)
-            .toLowerCase();
-
-
-        /* To */
-
-        const to =
-          "0x" +
-          String(log.topics[2])
-            .slice(-40)
-            .toLowerCase();
-
-
-        /* Must arrive at payment wallet */
-
-        if (
-          to !== PAYMENT_WALLET
-        ) {
-          continue;
-        }
-
-
-        /* Amount */
-
-        let rawValue;
-
-        try {
-
-          rawValue =
-            BigInt(
-              String(log.data || "0x0")
-            );
-
-        } catch (e) {
-
-          continue;
-
-        }
-
-
-        if (rawValue <= 0n) {
-          continue;
-        }
-
-
-        /*
-          BSC USDT uses 18 decimals
-        */
-
-        const amount =
-          Number(rawValue) /
-          1000000000000000000;
-
-
-        if (
-          !Number.isFinite(amount) ||
-          amount <= 0
-        ) {
-          continue;
-        }
-
-
-        payment = {
-
-          from: from,
-
-          to: to,
-
-          amount: amount,
-
-          rawValue:
-            rawValue.toString(),
-
-          blockNumber:
-            receipt.blockNumber
-
-        };
-
-
-        break;
-
-      }
-
-
-      /* =========================
-         NO PAYMENT FOUND
-      ========================= */
-
-      if (!payment) {
-
-        return callback({
-
-          verified: false,
-
-          reason:
-            "No BEP-20 USDT Transfer to the payment wallet was found"
-
-        });
-
-      }
-
-
-      /* =========================
-         CONFIRMATIONS
-      ========================= */
+      /* ---------------------------------------------------
+         GET RECEIPT
+      --------------------------------------------------- */
 
       rpcRequest(
-        "eth_blockNumber",
-        [],
-        (blockError, latestBlock) => {
+        "eth_getTransactionReceipt",
+        [txHash],
+        (receiptError, receipt) => {
 
-          if (blockError) {
+          if (receiptError) {
 
             return callback({
-
               verified: false,
-
-              reason:
-                blockError.error ||
-                "Could not check confirmations"
-
+              error:
+                receiptError.error ||
+                "Could not get transaction receipt"
             });
 
           }
 
 
-          const currentBlock =
-            parseInt(
-              latestBlock,
-              16
-            );
+          if (!receipt) {
 
-          const paymentBlock =
-            parseInt(
-              payment.blockNumber,
-              16
-            );
+            return callback({
+              verified: false,
+              reason:
+                "Transaction is still pending"
+            });
+
+          }
 
 
-          const confirmations =
-            currentBlock -
-            paymentBlock +
-            1;
-
+          /* ------------------------------------------------
+             TRANSACTION SUCCESS
+          ------------------------------------------------ */
 
           if (
-            confirmations < 3
+            String(receipt.status).toLowerCase() !==
+            "0x1"
           ) {
 
             return callback({
+              verified: false,
+              reason:
+                "Transaction failed"
+            });
+
+          }
+
+
+          const logs =
+            Array.isArray(receipt.logs)
+              ? receipt.logs
+              : [];
+
+
+          let payment = null;
+
+
+          /* ------------------------------------------------
+             SEARCH USDT TRANSFER EVENT
+          ------------------------------------------------ */
+
+          for (
+            let i = 0;
+            i < logs.length;
+            i++
+          ) {
+
+            const log =
+              logs[i];
+
+
+            /* Token contract */
+
+            if (
+              String(log.address || "")
+                .toLowerCase() !==
+              USDT_CONTRACT
+            ) {
+              continue;
+            }
+
+
+            /* Topics */
+
+            if (
+              !Array.isArray(log.topics) ||
+              log.topics.length < 3
+            ) {
+              continue;
+            }
+
+
+            /* Transfer event */
+
+            if (
+              String(log.topics[0])
+                .toLowerCase() !==
+              TRANSFER_TOPIC
+            ) {
+              continue;
+            }
+
+
+            /* From */
+
+            const from =
+              "0x" +
+              String(log.topics[1])
+                .slice(-40)
+                .toLowerCase();
+
+
+            /* To */
+
+            const to =
+              "0x" +
+              String(log.topics[2])
+                .slice(-40)
+                .toLowerCase();
+
+
+            /* Must reach payment wallet */
+
+            if (
+              to !== PAYMENT_WALLET
+            ) {
+              continue;
+            }
+
+
+            /* Raw USDT amount */
+
+            let rawValue;
+
+            try {
+
+              rawValue =
+                BigInt(
+                  String(
+                    log.data || "0x0"
+                  )
+                );
+
+            } catch (e) {
+
+              continue;
+
+            }
+
+
+            if (
+              rawValue <= 0n
+            ) {
+              continue;
+            }
+
+
+            /* ------------------------------------------------
+               BSC USDT uses 18 decimals
+            ------------------------------------------------ */
+
+            const amount =
+              Number(rawValue) /
+              Math.pow(10, 18);
+
+
+            if (
+              !Number.isFinite(amount) ||
+              amount <= 0
+            ) {
+              continue;
+            }
+
+
+            payment = {
+
+              from:
+                from,
+
+              to:
+                to,
+
+              amount:
+                amount,
+
+              rawValue:
+                rawValue.toString(),
+
+              blockNumber:
+                receipt.blockNumber
+
+            };
+
+
+            break;
+
+          }
+
+
+          /* ------------------------------------------------
+             PAYMENT NOT FOUND
+          ------------------------------------------------ */
+
+          if (!payment) {
+
+            return callback({
 
               verified: false,
 
               reason:
-                "Transaction has only " +
-                confirmations +
-                " confirmations. Required: 3",
-
-              amount:
-                payment.amount
+                "No BEP-20 USDT Transfer to the payment wallet was found"
 
             });
 
           }
 
 
-          /* =========================
-             VERIFIED
-          ========================= */
+          /* ------------------------------------------------
+             SUCCESS
+          ------------------------------------------------ */
 
           callback({
 
-            verified: true,
+            verified:
+              true,
 
-            txHash: txHash,
+            txHash:
+              txHash,
 
             amount:
               payment.amount,
@@ -440,16 +454,7 @@ function verifyPayment(txHash, callback) {
               payment.to,
 
             blockNumber:
-              payment.blockNumber,
-
-            confirmations:
-              confirmations,
-
-            network:
-              "BEP-20 / BSC",
-
-            token:
-              "USDT"
+              payment.blockNumber
 
           });
 
@@ -462,9 +467,9 @@ function verifyPayment(txHash, callback) {
 }
 
 
-/* =========================
+/* =========================================================
    AUTOMATIC USDT PAYOUT
-========================= */
+========================================================= */
 
 async function sendPayout(
   walletAddress,
@@ -480,6 +485,7 @@ async function sendPayout(
 
   }
 
+
   if (!PAYOUT_WALLET) {
 
     throw new Error(
@@ -487,6 +493,7 @@ async function sendPayout(
     );
 
   }
+
 
   if (!PAYOUT_API_SECRET) {
 
@@ -496,6 +503,8 @@ async function sendPayout(
 
   }
 
+
+  /* Wallet validation */
 
   if (
     !/^0x[a-fA-F0-9]{40}$/.test(
@@ -509,6 +518,8 @@ async function sendPayout(
 
   }
 
+
+  /* Amount */
 
   const payoutAmount =
     Number(amount);
@@ -539,6 +550,8 @@ async function sendPayout(
   }
 
 
+  /* clientOid */
+
   if (
     !clientOid ||
     String(clientOid).length < 5
@@ -551,12 +564,16 @@ async function sendPayout(
   }
 
 
+  /* Provider */
+
   const provider =
     new ethers.JsonRpcProvider(
       RPC_URL,
       56
     );
 
+
+  /* Signer */
 
   const signer =
     new ethers.Wallet(
@@ -571,6 +588,8 @@ async function sendPayout(
     ).toLowerCase();
 
 
+  /* Security check */
+
   if (
     signerAddress !==
     PAYOUT_WALLET
@@ -582,6 +601,8 @@ async function sendPayout(
 
   }
 
+
+  /* USDT contract */
 
   const usdtAbi = [
 
@@ -600,12 +621,16 @@ async function sendPayout(
     );
 
 
+  /* Amount */
+
   const rawAmount =
     ethers.parseUnits(
       payoutAmount.toFixed(6),
       18
     );
 
+
+  /* Balance */
 
   const usdtBalance =
     await usdt.balanceOf(
@@ -624,12 +649,16 @@ async function sendPayout(
   }
 
 
+  /* Send */
+
   const tx =
     await usdt.transfer(
       walletAddress,
       rawAmount
     );
 
+
+  /* Confirm */
 
   const receipt =
     await tx.wait();
@@ -649,7 +678,8 @@ async function sendPayout(
 
   return {
 
-    success: true,
+    success:
+      true,
 
     txHash:
       tx.hash,
@@ -674,9 +704,9 @@ async function sendPayout(
 }
 
 
-/* =========================
+/* =========================================================
    READ REQUEST BODY
-========================= */
+========================================================= */
 
 function readBody(req) {
 
@@ -685,11 +715,13 @@ function readBody(req) {
 
       let body = "";
 
+
       req.on(
         "data",
         (chunk) => {
 
           body += chunk;
+
 
           if (
             body.length > 10000
@@ -746,9 +778,9 @@ function readBody(req) {
 }
 
 
-/* =========================
+/* =========================================================
    HTTP SERVER
-========================= */
+========================================================= */
 
 const server =
   http.createServer(
@@ -761,9 +793,9 @@ const server =
         );
 
 
-      /* =========================
+      /* =====================================================
          HOME
-      ========================= */
+      ===================================================== */
 
       if (
         req.method === "GET" &&
@@ -785,9 +817,9 @@ const server =
       }
 
 
-      /* =========================
+      /* =====================================================
          VERIFY PAYMENT
-      ========================= */
+      ===================================================== */
 
       if (
         req.method === "GET" &&
@@ -813,7 +845,8 @@ const server =
 
           return res.end(
             JSON.stringify({
-              verified: false,
+              verified:
+                false,
               error:
                 "TXID is required"
             })
@@ -846,9 +879,9 @@ const server =
       }
 
 
-      /* =========================
+      /* =====================================================
          PAYOUT
-      ========================= */
+      ===================================================== */
 
       if (
         req.method === "POST" &&
@@ -1070,14 +1103,15 @@ const server =
 
         }
 
+
         return;
 
       }
 
 
-      /* =========================
+      /* =====================================================
          NOT FOUND
-      ========================= */
+      ===================================================== */
 
       res.writeHead(
         404,
@@ -1087,6 +1121,7 @@ const server =
         }
       );
 
+
       res.end(
         "Not Found"
       );
@@ -1095,9 +1130,9 @@ const server =
   );
 
 
-/* =========================
-   START SERVER
-========================= */
+/* =========================================================
+   START
+========================================================= */
 
 server.listen(
   PORT,
@@ -1117,8 +1152,7 @@ server.listen(
     );
 
     console.log(
-      "Server running on port",
-      PORT
+      `Server running on port ${PORT}`
     );
 
     console.log(
