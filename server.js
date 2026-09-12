@@ -62,16 +62,22 @@ const processedPayouts = new Set();
 
 async function testDatabase() {
   try {
-    const result = await db.query("SELECT NOW()");
+
+    const result =
+      await db.query("SELECT NOW()");
+
     console.log(
       "PostgreSQL connected:",
       result.rows[0].now
     );
+
   } catch (error) {
+
     console.error(
       "PostgreSQL connection error:",
       error.message
     );
+
   }
 }
 
@@ -80,117 +86,204 @@ async function testDatabase() {
 ========================= */
 
 /*
-  Existing table name:
+  PostgreSQL table:
+
   "Task Plan Bot"
 
-  Existing columns:
+  Columns:
+
   id
   task_id
   title
   description
+  link
+  reward
+  status
 */
+
+
+/* =========================
+   GET ALL TASKS
+========================= */
 
 async function getTasks() {
 
-  const result = await db.query(`
-    SELECT
-      id,
-      task_id,
-      title,
-      description
-    FROM "Task Plan Bot"
-    ORDER BY task_id ASC
-  `);
+  const result =
+    await db.query(`
+      SELECT
+        id,
+        task_id,
+        title,
+        description,
+        link,
+        reward,
+        status
+      FROM "Task Plan Bot"
+      ORDER BY task_id ASC
+    `);
 
   return result.rows;
 }
 
 
+/* =========================
+   GET SINGLE TASK
+========================= */
+
 async function getTask(taskId) {
 
-  const result = await db.query(
-    `
-    SELECT
-      id,
-      task_id,
-      title,
-      description
-    FROM "Task Plan Bot"
-    WHERE task_id = $1
-    LIMIT 1
-    `,
-    [Number(taskId)]
-  );
+  const result =
+    await db.query(
+      `
+      SELECT
+        id,
+        task_id,
+        title,
+        description,
+        link,
+        reward,
+        status
+      FROM "Task Plan Bot"
+      WHERE task_id = $1
+      LIMIT 1
+      `,
+      [
+        Number(taskId)
+      ]
+    );
 
   return result.rows[0] || null;
 }
 
 
-async function addTask(taskId, title, description) {
+/* =========================
+   ADD TASK
+========================= */
 
-  const result = await db.query(
-    `
-    INSERT INTO "Task Plan Bot"
-      (task_id, title, description)
-    VALUES
-      ($1, $2, $3)
-    RETURNING
-      id,
-      task_id,
-      title,
-      description
-    `,
-    [
-      Number(taskId),
-      String(title),
-      String(description || "")
-    ]
-  );
+async function addTask(
+  taskId,
+  title,
+  description,
+  link,
+  reward,
+  status
+) {
+
+  const result =
+    await db.query(
+      `
+      INSERT INTO "Task Plan Bot"
+        (
+          task_id,
+          title,
+          description,
+          link,
+          reward,
+          status
+        )
+      VALUES
+        (
+          $1,
+          $2,
+          $3,
+          $4,
+          $5,
+          $6
+        )
+      RETURNING
+        id,
+        task_id,
+        title,
+        description,
+        link,
+        reward,
+        status
+      `,
+      [
+        Number(taskId),
+        String(title),
+        String(description || ""),
+        String(link || ""),
+        Number(reward || 0.05),
+        String(status || "active")
+      ]
+    );
 
   return result.rows[0];
 }
 
 
-async function updateTask(taskId, title, description) {
+/* =========================
+   UPDATE TASK
+========================= */
 
-  const result = await db.query(
-    `
-    UPDATE "Task Plan Bot"
-    SET
-      title = $2,
-      description = $3
-    WHERE task_id = $1
-    RETURNING
-      id,
-      task_id,
-      title,
-      description
-    `,
-    [
-      Number(taskId),
-      String(title),
-      String(description || "")
-    ]
-  );
+async function updateTask(
+  taskId,
+  title,
+  description,
+  link,
+  reward,
+  status
+) {
+
+  const result =
+    await db.query(
+      `
+      UPDATE "Task Plan Bot"
+      SET
+        title = $2,
+        description = $3,
+        link = $4,
+        reward = $5,
+        status = $6
+      WHERE task_id = $1
+      RETURNING
+        id,
+        task_id,
+        title,
+        description,
+        link,
+        reward,
+        status
+      `,
+      [
+        Number(taskId),
+        String(title),
+        String(description || ""),
+        String(link || ""),
+        Number(reward || 0.05),
+        String(status || "active")
+      ]
+    );
 
   return result.rows[0] || null;
 }
 
 
+/* =========================
+   DELETE TASK
+========================= */
+
 async function deleteTask(taskId) {
 
-  const result = await db.query(
-    `
-    DELETE FROM "Task Plan Bot"
-    WHERE task_id = $1
-    RETURNING
-      id,
-      task_id,
-      title,
-      description
-    `,
-    [Number(taskId)]
-  );
+  const result =
+    await db.query(
+      `
+      DELETE FROM "Task Plan Bot"
+      WHERE task_id = $1
+      RETURNING
+        id,
+        task_id,
+        title,
+        description,
+        link,
+        reward,
+        status
+      `,
+      [
+        Number(taskId)
+      ]
+    );
 
   return result.rows[0] || null;
 }
@@ -200,77 +293,99 @@ async function deleteTask(taskId) {
    RPC REQUEST
 ========================= */
 
-function rpcRequest(method, params, callback) {
+function rpcRequest(
+  method,
+  params,
+  callback
+) {
 
-  const body = JSON.stringify({
-    jsonrpc: "2.0",
-    id: 1,
-    method: method,
-    params: params
-  });
+  const body =
+    JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: method,
+      params: params
+    });
 
-  const url = new URL(RPC_URL);
+  const url =
+    new URL(RPC_URL);
 
   const options = {
     hostname: url.hostname,
     path: url.pathname,
     method: "POST",
     headers: {
-      "Content-Type": "application/json",
-      "Content-Length": Buffer.byteLength(body)
+      "Content-Type":
+        "application/json",
+      "Content-Length":
+        Buffer.byteLength(body)
     }
   };
 
-  const req = https.request(
-    options,
-    (res) => {
+  const req =
+    https.request(
+      options,
+      (res) => {
 
-      let data = "";
+        let data = "";
 
-      res.on("data", (chunk) => {
-        data += chunk;
-      });
+        res.on(
+          "data",
+          (chunk) => {
+            data += chunk;
+          }
+        );
 
-      res.on("end", () => {
+        res.on(
+          "end",
+          () => {
 
-        try {
+            try {
 
-          const json = JSON.parse(data);
+              const json =
+                JSON.parse(data);
 
-          if (json.error) {
+              if (json.error) {
 
-            return callback({
-              error:
-                json.error.message ||
-                "RPC error"
-            });
+                return callback({
+                  error:
+                    json.error.message ||
+                    "RPC error"
+                });
+
+              }
+
+              callback(
+                null,
+                json.result
+              );
+
+            } catch (e) {
+
+              callback({
+                error:
+                  "Invalid RPC response"
+              });
+
+            }
 
           }
+        );
 
-          callback(null, json.result);
+      }
+    );
 
-        } catch (e) {
+  req.on(
+    "error",
+    () => {
 
-          callback({
-            error:
-              "Invalid RPC response"
-          });
-
-        }
-
+      callback({
+        error:
+          "BSC RPC connection failed"
       });
 
     }
   );
-
-  req.on("error", () => {
-
-    callback({
-      error:
-        "BSC RPC connection failed"
-    });
-
-  });
 
   req.write(body);
   req.end();
@@ -281,15 +396,21 @@ function rpcRequest(method, params, callback) {
    VERIFY PAYMENT
 ========================= */
 
-function verifyPayment(txHash, callback) {
+function verifyPayment(
+  txHash,
+  callback
+) {
 
   if (
-    !/^0x[a-fA-F0-9]{64}$/.test(txHash)
+    !/^0x[a-fA-F0-9]{64}$/.test(
+      txHash
+    )
   ) {
 
     return callback({
       verified: false,
-      error: "Invalid TXID"
+      error:
+        "Invalid TXID"
     });
 
   }
@@ -321,7 +442,8 @@ function verifyPayment(txHash, callback) {
       }
 
       if (
-        String(tx.to || "").toLowerCase() !==
+        String(tx.to || "")
+          .toLowerCase() !==
         USDT_CONTRACT
       ) {
 
@@ -361,7 +483,8 @@ function verifyPayment(txHash, callback) {
           }
 
           if (
-            String(receipt.status).toLowerCase() !==
+            String(receipt.status)
+              .toLowerCase() !==
             "0x1"
           ) {
 
@@ -374,7 +497,9 @@ function verifyPayment(txHash, callback) {
           }
 
           const logs =
-            Array.isArray(receipt.logs)
+            Array.isArray(
+              receipt.logs
+            )
               ? receipt.logs
               : [];
 
@@ -400,7 +525,8 @@ function verifyPayment(txHash, callback) {
             }
 
             if (
-              String(log.topics[0]).toLowerCase() !==
+              String(log.topics[0])
+                .toLowerCase() !==
               TRANSFER_TOPIC
             ) {
               continue;
@@ -419,7 +545,8 @@ function verifyPayment(txHash, callback) {
                 .toLowerCase();
 
             if (
-              to !== PAYMENT_WALLET
+              to !==
+              PAYMENT_WALLET
             ) {
               continue;
             }
@@ -430,7 +557,10 @@ function verifyPayment(txHash, callback) {
 
               rawValue =
                 BigInt(
-                  String(log.data || "0x0")
+                  String(
+                    log.data ||
+                    "0x0"
+                  )
                 );
 
             } catch (e) {
@@ -454,7 +584,8 @@ function verifyPayment(txHash, callback) {
               from: from,
               to: to,
               amount: amount,
-              rawValue: rawValue.toString(),
+              rawValue:
+                rawValue.toString(),
               blockNumber:
                 receipt.blockNumber
             };
@@ -493,14 +624,20 @@ function verifyPayment(txHash, callback) {
               try {
 
                 const latest =
-                  BigInt(latestBlock);
+                  BigInt(
+                    latestBlock
+                  );
 
                 const txBlock =
-                  BigInt(receipt.blockNumber);
+                  BigInt(
+                    receipt.blockNumber
+                  );
 
                 confirmations =
                   Number(
-                    latest - txBlock + 1n
+                    latest -
+                    txBlock +
+                    1n
                   );
 
               } catch (e) {
@@ -509,7 +646,9 @@ function verifyPayment(txHash, callback) {
 
               }
 
-              if (confirmations < 3) {
+              if (
+                confirmations < 3
+              ) {
 
                 return callback({
                   verified: false,
@@ -527,7 +666,8 @@ function verifyPayment(txHash, callback) {
 
               callback({
 
-                verified: true,
+                verified:
+                  true,
 
                 txHash:
                   txHash,
@@ -616,7 +756,9 @@ async function sendPayout(
     Number(amount);
 
   if (
-    !Number.isFinite(payoutAmount) ||
+    !Number.isFinite(
+      payoutAmount
+    ) ||
     payoutAmount <= 0
   ) {
 
@@ -627,7 +769,8 @@ async function sendPayout(
   }
 
   if (
-    payoutAmount < MIN_WITHDRAW
+    payoutAmount <
+    MIN_WITHDRAW
   ) {
 
     throw new Error(
@@ -890,8 +1033,10 @@ const server =
 
           return res.end(
             JSON.stringify({
-              success: true,
-              tasks: tasks
+              success:
+                true,
+              tasks:
+                tasks
             })
           );
 
@@ -912,7 +1057,8 @@ const server =
 
           return res.end(
             JSON.stringify({
-              success: false,
+              success:
+                false,
               error:
                 error.message
             })
@@ -949,7 +1095,8 @@ const server =
 
           return res.end(
             JSON.stringify({
-              success: false,
+              success:
+                false,
               error:
                 "task_id is required"
             })
@@ -960,7 +1107,9 @@ const server =
         try {
 
           const task =
-            await getTask(taskId);
+            await getTask(
+              taskId
+            );
 
           res.writeHead(
             200,
@@ -972,8 +1121,10 @@ const server =
 
           return res.end(
             JSON.stringify({
-              success: true,
-              task: task
+              success:
+                true,
+              task:
+                task
             })
           );
 
@@ -989,7 +1140,8 @@ const server =
 
           return res.end(
             JSON.stringify({
-              success: false,
+              success:
+                false,
               error:
                 error.message
             })
@@ -1015,16 +1167,41 @@ const server =
             await readBody(req);
 
           const taskId =
-            Number(body.task_id);
+            Number(
+              body.task_id
+            );
 
           const title =
-            String(body.title || "").trim();
+            String(
+              body.title || ""
+            ).trim();
 
           const description =
-            String(body.description || "").trim();
+            String(
+              body.description || ""
+            ).trim();
+
+          const link =
+            String(
+              body.link || ""
+            ).trim();
+
+          const reward =
+            Number(
+              body.reward
+            );
+
+          const status =
+            String(
+              body.status ||
+              "active"
+            ).trim();
+
 
           if (
-            !Number.isInteger(taskId) ||
+            !Number.isInteger(
+              taskId
+            ) ||
             taskId <= 0
           ) {
 
@@ -1042,8 +1219,23 @@ const server =
 
           }
 
+          if (
+            !Number.isFinite(
+              reward
+            ) ||
+            reward < 0
+          ) {
+
+            throw new Error(
+              "Valid reward is required"
+            );
+
+          }
+
           const existing =
-            await getTask(taskId);
+            await getTask(
+              taskId
+            );
 
           if (existing) {
 
@@ -1057,7 +1249,8 @@ const server =
 
             return res.end(
               JSON.stringify({
-                success: false,
+                success:
+                  false,
                 error:
                   "Task ID already exists"
               })
@@ -1069,7 +1262,10 @@ const server =
             await addTask(
               taskId,
               title,
-              description
+              description,
+              link,
+              reward,
+              status
             );
 
           res.writeHead(
@@ -1082,8 +1278,10 @@ const server =
 
           return res.end(
             JSON.stringify({
-              success: true,
-              task: task
+              success:
+                true,
+              task:
+                task
             })
           );
 
@@ -1104,7 +1302,8 @@ const server =
 
           return res.end(
             JSON.stringify({
-              success: false,
+              success:
+                false,
               error:
                 error.message
             })
@@ -1130,16 +1329,41 @@ const server =
             await readBody(req);
 
           const taskId =
-            Number(body.task_id);
+            Number(
+              body.task_id
+            );
 
           const title =
-            String(body.title || "").trim();
+            String(
+              body.title || ""
+            ).trim();
 
           const description =
-            String(body.description || "").trim();
+            String(
+              body.description || ""
+            ).trim();
+
+          const link =
+            String(
+              body.link || ""
+            ).trim();
+
+          const reward =
+            Number(
+              body.reward
+            );
+
+          const status =
+            String(
+              body.status ||
+              "active"
+            ).trim();
+
 
           if (
-            !Number.isInteger(taskId) ||
+            !Number.isInteger(
+              taskId
+            ) ||
             taskId <= 0
           ) {
 
@@ -1157,11 +1381,27 @@ const server =
 
           }
 
+          if (
+            !Number.isFinite(
+              reward
+            ) ||
+            reward < 0
+          ) {
+
+            throw new Error(
+              "Valid reward is required"
+            );
+
+          }
+
           const task =
             await updateTask(
               taskId,
               title,
-              description
+              description,
+              link,
+              reward,
+              status
             );
 
           if (!task) {
@@ -1176,7 +1416,8 @@ const server =
 
             return res.end(
               JSON.stringify({
-                success: false,
+                success:
+                  false,
                 error:
                   "Task not found"
               })
@@ -1194,8 +1435,10 @@ const server =
 
           return res.end(
             JSON.stringify({
-              success: true,
-              task: task
+              success:
+                true,
+              task:
+                task
             })
           );
 
@@ -1211,7 +1454,8 @@ const server =
 
           return res.end(
             JSON.stringify({
-              success: false,
+              success:
+                false,
               error:
                 error.message
             })
@@ -1248,7 +1492,8 @@ const server =
 
           return res.end(
             JSON.stringify({
-              success: false,
+              success:
+                false,
               error:
                 "task_id is required"
             })
@@ -1259,7 +1504,9 @@ const server =
         try {
 
           const task =
-            await deleteTask(taskId);
+            await deleteTask(
+              taskId
+            );
 
           if (!task) {
 
@@ -1273,7 +1520,8 @@ const server =
 
             return res.end(
               JSON.stringify({
-                success: false,
+                success:
+                  false,
                 error:
                   "Task not found"
               })
@@ -1291,8 +1539,10 @@ const server =
 
           return res.end(
             JSON.stringify({
-              success: true,
-              deleted: task
+              success:
+                true,
+              deleted:
+                task
             })
           );
 
@@ -1308,7 +1558,8 @@ const server =
 
           return res.end(
             JSON.stringify({
-              success: false,
+              success:
+                false,
               error:
                 error.message
             })
@@ -1370,7 +1621,9 @@ const server =
             );
 
             res.end(
-              JSON.stringify(result)
+              JSON.stringify(
+                result
+              )
             );
 
           }
@@ -1537,7 +1790,9 @@ const server =
           );
 
           res.end(
-            JSON.stringify(result)
+            JSON.stringify(
+              result
+            )
           );
 
         } catch (error) {
@@ -1552,7 +1807,7 @@ const server =
             {
               "Content-Type":
                 "application/json"
-            }
+              }
           );
 
           res.end(
@@ -1567,7 +1822,8 @@ const server =
 
         } finally {
 
-          payoutBusy = false;
+          payoutBusy =
+            false;
 
         }
 
