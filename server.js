@@ -1,8 +1,20 @@
 const http = require("http");
 const https = require("https");
 const { ethers } = require("ethers");
+const { Pool } = require("pg");
 
 const PORT = process.env.PORT || 3000;
+
+/* =========================
+   POSTGRESQL
+========================= */
+
+const db = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false
+  }
+});
 
 /* =========================
    PAYMENT SETTINGS
@@ -42,12 +54,147 @@ if (!Number.isFinite(MIN_WITHDRAW) || MIN_WITHDRAW <= 0) {
 
 let payoutBusy = false;
 
-/*
-  Memory duplicate protection.
-  Railway restart হলে এটি reset হবে।
-  Production-এ payout ID database/storage-এ রাখাই ভালো।
-*/
 const processedPayouts = new Set();
+
+/* =========================
+   DATABASE TEST
+========================= */
+
+async function testDatabase() {
+  try {
+    const result = await db.query("SELECT NOW()");
+    console.log(
+      "PostgreSQL connected:",
+      result.rows[0].now
+    );
+  } catch (error) {
+    console.error(
+      "PostgreSQL connection error:",
+      error.message
+    );
+  }
+}
+
+/* =========================
+   TASK DATABASE FUNCTIONS
+========================= */
+
+/*
+  Existing table name:
+  "Task Plan Bot"
+
+  Existing columns:
+  id
+  task_id
+  title
+  description
+*/
+
+async function getTasks() {
+
+  const result = await db.query(`
+    SELECT
+      id,
+      task_id,
+      title,
+      description
+    FROM "Task Plan Bot"
+    ORDER BY task_id ASC
+  `);
+
+  return result.rows;
+}
+
+
+async function getTask(taskId) {
+
+  const result = await db.query(
+    `
+    SELECT
+      id,
+      task_id,
+      title,
+      description
+    FROM "Task Plan Bot"
+    WHERE task_id = $1
+    LIMIT 1
+    `,
+    [Number(taskId)]
+  );
+
+  return result.rows[0] || null;
+}
+
+
+async function addTask(taskId, title, description) {
+
+  const result = await db.query(
+    `
+    INSERT INTO "Task Plan Bot"
+      (task_id, title, description)
+    VALUES
+      ($1, $2, $3)
+    RETURNING
+      id,
+      task_id,
+      title,
+      description
+    `,
+    [
+      Number(taskId),
+      String(title),
+      String(description || "")
+    ]
+  );
+
+  return result.rows[0];
+}
+
+
+async function updateTask(taskId, title, description) {
+
+  const result = await db.query(
+    `
+    UPDATE "Task Plan Bot"
+    SET
+      title = $2,
+      description = $3
+    WHERE task_id = $1
+    RETURNING
+      id,
+      task_id,
+      title,
+      description
+    `,
+    [
+      Number(taskId),
+      String(title),
+      String(description || "")
+    ]
+  );
+
+  return result.rows[0] || null;
+}
+
+
+async function deleteTask(taskId) {
+
+  const result = await db.query(
+    `
+    DELETE FROM "Task Plan Bot"
+    WHERE task_id = $1
+    RETURNING
+      id,
+      task_id,
+      title,
+      description
+    `,
+    [Number(taskId)]
+  );
+
+  return result.rows[0] || null;
+}
+
 
 /* =========================
    RPC REQUEST
@@ -129,6 +276,7 @@ function rpcRequest(method, params, callback) {
   req.end();
 }
 
+
 /* =========================
    VERIFY PAYMENT
 ========================= */
@@ -172,12 +320,6 @@ function verifyPayment(txHash, callback) {
 
       }
 
-      /*
-        IMPORTANT:
-        User payment transaction normally goes
-        TO the USDT contract.
-      */
-
       if (
         String(tx.to || "").toLowerCase() !==
         USDT_CONTRACT
@@ -218,10 +360,6 @@ function verifyPayment(txHash, callback) {
 
           }
 
-          /*
-            Transaction success
-          */
-
           if (
             String(receipt.status).toLowerCase() !==
             "0x1"
@@ -241,10 +379,6 @@ function verifyPayment(txHash, callback) {
               : [];
 
           let payment = null;
-
-          /*
-            Find USDT Transfer event
-          */
 
           for (
             const log of logs
@@ -284,10 +418,6 @@ function verifyPayment(txHash, callback) {
                 .slice(-40)
                 .toLowerCase();
 
-            /*
-              Receiver MUST be payment wallet
-            */
-
             if (
               to !== PAYMENT_WALLET
             ) {
@@ -308,10 +438,6 @@ function verifyPayment(txHash, callback) {
               continue;
 
             }
-
-            /*
-              BSC USDT uses 18 decimals
-            */
 
             const amount =
               Number(rawValue) /
@@ -336,10 +462,6 @@ function verifyPayment(txHash, callback) {
             break;
           }
 
-          /*
-            No matching USDT transfer
-          */
-
           if (!payment) {
 
             return callback({
@@ -349,11 +471,6 @@ function verifyPayment(txHash, callback) {
             });
 
           }
-
-          /*
-            Get latest BSC block
-            to calculate confirmations
-          */
 
           rpcRequest(
             "eth_blockNumber",
@@ -392,10 +509,6 @@ function verifyPayment(txHash, callback) {
 
               }
 
-              /*
-                Require 3 confirmations
-              */
-
               if (confirmations < 3) {
 
                 return callback({
@@ -411,10 +524,6 @@ function verifyPayment(txHash, callback) {
                 });
 
               }
-
-              /*
-                FINAL VERIFIED RESULT
-              */
 
               callback({
 
@@ -455,6 +564,7 @@ function verifyPayment(txHash, callback) {
     }
   );
 }
+
 
 /* =========================
    AUTOMATIC USDT PAYOUT
@@ -556,11 +666,6 @@ async function sendPayout(
       await signer.getAddress()
     ).toLowerCase();
 
-  /*
-    Make sure private key belongs
-    to configured payout wallet
-  */
-
   if (
     signerAddress !==
     PAYOUT_WALLET
@@ -651,6 +756,7 @@ async function sendPayout(
   };
 }
 
+
 /* =========================
    READ REQUEST BODY
 ========================= */
@@ -720,6 +826,7 @@ function readBody(req) {
 
 }
 
+
 /* =========================
    HTTP SERVER
 ========================= */
@@ -733,6 +840,7 @@ const server =
           req.url,
           `http://${req.headers.host}`
         );
+
 
       /* =========================
          HOME
@@ -756,6 +864,460 @@ const server =
         );
 
       }
+
+
+      /* =========================
+         DATABASE TASK LIST
+      ========================= */
+
+      if (
+        req.method === "GET" &&
+        parsed.pathname === "/tasks"
+      ) {
+
+        try {
+
+          const tasks =
+            await getTasks();
+
+          res.writeHead(
+            200,
+            {
+              "Content-Type":
+                "application/json"
+            }
+          );
+
+          return res.end(
+            JSON.stringify({
+              success: true,
+              tasks: tasks
+            })
+          );
+
+        } catch (error) {
+
+          console.error(
+            "Get tasks error:",
+            error.message
+          );
+
+          res.writeHead(
+            500,
+            {
+              "Content-Type":
+                "application/json"
+            }
+          );
+
+          return res.end(
+            JSON.stringify({
+              success: false,
+              error:
+                error.message
+            })
+          );
+
+        }
+
+      }
+
+
+      /* =========================
+         GET SINGLE TASK
+      ========================= */
+
+      if (
+        req.method === "GET" &&
+        parsed.pathname === "/task"
+      ) {
+
+        const taskId =
+          parsed.searchParams.get(
+            "task_id"
+          );
+
+        if (!taskId) {
+
+          res.writeHead(
+            400,
+            {
+              "Content-Type":
+                "application/json"
+            }
+          );
+
+          return res.end(
+            JSON.stringify({
+              success: false,
+              error:
+                "task_id is required"
+            })
+          );
+
+        }
+
+        try {
+
+          const task =
+            await getTask(taskId);
+
+          res.writeHead(
+            200,
+            {
+              "Content-Type":
+                "application/json"
+            }
+          );
+
+          return res.end(
+            JSON.stringify({
+              success: true,
+              task: task
+            })
+          );
+
+        } catch (error) {
+
+          res.writeHead(
+            500,
+            {
+              "Content-Type":
+                "application/json"
+            }
+          );
+
+          return res.end(
+            JSON.stringify({
+              success: false,
+              error:
+                error.message
+            })
+          );
+
+        }
+
+      }
+
+
+      /* =========================
+         ADD TASK
+      ========================= */
+
+      if (
+        req.method === "POST" &&
+        parsed.pathname === "/task"
+      ) {
+
+        try {
+
+          const body =
+            await readBody(req);
+
+          const taskId =
+            Number(body.task_id);
+
+          const title =
+            String(body.title || "").trim();
+
+          const description =
+            String(body.description || "").trim();
+
+          if (
+            !Number.isInteger(taskId) ||
+            taskId <= 0
+          ) {
+
+            throw new Error(
+              "Valid task_id is required"
+            );
+
+          }
+
+          if (!title) {
+
+            throw new Error(
+              "Task title is required"
+            );
+
+          }
+
+          const existing =
+            await getTask(taskId);
+
+          if (existing) {
+
+            res.writeHead(
+              409,
+              {
+                "Content-Type":
+                  "application/json"
+              }
+            );
+
+            return res.end(
+              JSON.stringify({
+                success: false,
+                error:
+                  "Task ID already exists"
+              })
+            );
+
+          }
+
+          const task =
+            await addTask(
+              taskId,
+              title,
+              description
+            );
+
+          res.writeHead(
+            201,
+            {
+              "Content-Type":
+                "application/json"
+            }
+          );
+
+          return res.end(
+            JSON.stringify({
+              success: true,
+              task: task
+            })
+          );
+
+        } catch (error) {
+
+          console.error(
+            "Add task error:",
+            error.message
+          );
+
+          res.writeHead(
+            400,
+            {
+              "Content-Type":
+                "application/json"
+            }
+          );
+
+          return res.end(
+            JSON.stringify({
+              success: false,
+              error:
+                error.message
+            })
+          );
+
+        }
+
+      }
+
+
+      /* =========================
+         UPDATE TASK
+      ========================= */
+
+      if (
+        req.method === "PUT" &&
+        parsed.pathname === "/task"
+      ) {
+
+        try {
+
+          const body =
+            await readBody(req);
+
+          const taskId =
+            Number(body.task_id);
+
+          const title =
+            String(body.title || "").trim();
+
+          const description =
+            String(body.description || "").trim();
+
+          if (
+            !Number.isInteger(taskId) ||
+            taskId <= 0
+          ) {
+
+            throw new Error(
+              "Valid task_id is required"
+            );
+
+          }
+
+          if (!title) {
+
+            throw new Error(
+              "Task title is required"
+            );
+
+          }
+
+          const task =
+            await updateTask(
+              taskId,
+              title,
+              description
+            );
+
+          if (!task) {
+
+            res.writeHead(
+              404,
+              {
+                "Content-Type":
+                  "application/json"
+              }
+            );
+
+            return res.end(
+              JSON.stringify({
+                success: false,
+                error:
+                  "Task not found"
+              })
+            );
+
+          }
+
+          res.writeHead(
+            200,
+            {
+              "Content-Type":
+                "application/json"
+            }
+          );
+
+          return res.end(
+            JSON.stringify({
+              success: true,
+              task: task
+            })
+          );
+
+        } catch (error) {
+
+          res.writeHead(
+            400,
+            {
+              "Content-Type":
+                "application/json"
+            }
+          );
+
+          return res.end(
+            JSON.stringify({
+              success: false,
+              error:
+                error.message
+            })
+          );
+
+        }
+
+      }
+
+
+      /* =========================
+         DELETE TASK
+      ========================= */
+
+      if (
+        req.method === "DELETE" &&
+        parsed.pathname === "/task"
+      ) {
+
+        const taskId =
+          parsed.searchParams.get(
+            "task_id"
+          );
+
+        if (!taskId) {
+
+          res.writeHead(
+            400,
+            {
+              "Content-Type":
+                "application/json"
+            }
+          );
+
+          return res.end(
+            JSON.stringify({
+              success: false,
+              error:
+                "task_id is required"
+            })
+          );
+
+        }
+
+        try {
+
+          const task =
+            await deleteTask(taskId);
+
+          if (!task) {
+
+            res.writeHead(
+              404,
+              {
+                "Content-Type":
+                  "application/json"
+              }
+            );
+
+            return res.end(
+              JSON.stringify({
+                success: false,
+                error:
+                  "Task not found"
+              })
+            );
+
+          }
+
+          res.writeHead(
+            200,
+            {
+              "Content-Type":
+                "application/json"
+            }
+          );
+
+          return res.end(
+            JSON.stringify({
+              success: true,
+              deleted: task
+            })
+          );
+
+        } catch (error) {
+
+          res.writeHead(
+            500,
+            {
+              "Content-Type":
+                "application/json"
+            }
+          );
+
+          return res.end(
+            JSON.stringify({
+              success: false,
+              error:
+                error.message
+            })
+          );
+
+        }
+
+      }
+
 
       /* =========================
          VERIFY PAYMENT
@@ -817,6 +1379,7 @@ const server =
         return;
 
       }
+
 
       /* =========================
          PAYOUT
@@ -1012,6 +1575,7 @@ const server =
 
       }
 
+
       /* =========================
          NOT FOUND
       ========================= */
@@ -1031,6 +1595,7 @@ const server =
     }
   );
 
+
 /* =========================
    START SERVER
 ========================= */
@@ -1038,7 +1603,7 @@ const server =
 server.listen(
   PORT,
   "0.0.0.0",
-  () => {
+  async () => {
 
     console.log(
       "================================="
@@ -1077,6 +1642,8 @@ server.listen(
       MIN_WITHDRAW,
       "USDT"
     );
+
+    await testDatabase();
 
   }
 );
