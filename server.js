@@ -563,12 +563,6 @@ function youtubeClient() {
 
 /* =========================================================
    YOUTUBE CHANNEL TARGET
-   Supports:
-
-   UCxxxxxxxxxxxxxxxxxxxx
-   https://www.youtube.com/channel/UC...
-   @handle
-   https://www.youtube.com/@handle
 ========================================================= */
 
 function extractYoutubeTarget(value) {
@@ -588,8 +582,6 @@ function extractYoutubeTarget(value) {
   }
 
 
-  /* Direct Channel ID */
-
   if (
     /^UC[a-zA-Z0-9_-]{20,}$/.test(
       text
@@ -602,8 +594,6 @@ function extractYoutubeTarget(value) {
     };
   }
 
-
-  /* Channel URL */
 
   const channelMatch =
     text.match(
@@ -620,8 +610,6 @@ function extractYoutubeTarget(value) {
     };
   }
 
-
-  /* @handle */
 
   const handleMatch =
     text.match(
@@ -673,8 +661,6 @@ async function resolveYoutubeChannelId(
   }
 
 
-  /* Already Channel ID */
-
   if (
     parsed.type === "channelId"
   ) {
@@ -682,8 +668,6 @@ async function resolveYoutubeChannelId(
     return parsed.value;
   }
 
-
-  /* Resolve @handle */
 
   if (
     parsed.type === "handle"
@@ -806,9 +790,6 @@ async function saveYoutubeToken(
     tokens.refresh_token ||
     "";
 
-
-  /* Keep old refresh token if Google
-     does not return a new one */
 
   if (
     !refreshToken
@@ -1148,8 +1129,6 @@ function verifyPayment(
       }
 
 
-      /* Must be USDT contract */
-
       if (
         String(
           tx.to || ""
@@ -1210,8 +1189,6 @@ function verifyPayment(
             });
           }
 
-
-          /* Transaction failed */
 
           if (
             String(
@@ -1364,8 +1341,6 @@ function verifyPayment(
             });
           }
 
-
-          /* Confirmation check */
 
           rpcRequest(
             "eth_blockNumber",
@@ -2754,7 +2729,8 @@ const server =
 
       /* =====================================================
          YOUTUBE CONNECT
-      ===================================================== */
+         DIRECT GOOGLE REDIRECT
+===================================================== */
 
       if (
         req.method === "GET" &&
@@ -2793,18 +2769,20 @@ const server =
             );
 
 
-          return send(
-            res,
-            200,
+          /* =========================
+             DIRECT REDIRECT TO GOOGLE
+          ========================= */
+
+          res.writeHead(
+            302,
             {
-
-              success:
-                true,
-
-              url:
+              Location:
                 url
             }
           );
+
+
+          return res.end();
 
         } catch (error) {
 
@@ -3042,7 +3020,7 @@ const server =
 
       /* =====================================================
          YOUTUBE VERIFY
-      ===================================================== */
+===================================================== */
 
       if (
         req.method === "GET" &&
