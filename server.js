@@ -6,47 +6,83 @@ const { google } = require("googleapis");
 const crypto = require("crypto");
 
 const PORT = process.env.PORT || 3000;
-const RPC_URL = "https://bsc-dataseed.bnbchain.org";
+
+const RPC_URL =
+  "https://bsc-dataseed.bnbchain.org";
+
+
+/* =========================
+   PAYMENT SETTINGS
+========================= */
 
 const PAYMENT_WALLET =
-  "0x07207Bf282B4e3dc2db376F29e40bfbc7d61607B".toLowerCase();
+  "0x07207Bf282B4e3dc2db376F29e40bfbc7d61607B"
+    .toLowerCase();
 
 const USDT_CONTRACT =
-  "0x55d398326f99059ff775485246999027b3197955".toLowerCase();
+  "0x55d398326f99059ff775485246999027b3197955"
+    .toLowerCase();
 
 const TRANSFER_TOPIC =
   "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 
+
+/* =========================
+   PAYOUT SETTINGS
+========================= */
+
 const PAYOUT_WALLET =
-  String(process.env.PAYOUT_WALLET || "").toLowerCase();
+  String(
+    process.env.PAYOUT_WALLET || ""
+  )
+    .trim()
+    .toLowerCase();
 
 const PAYOUT_PRIVATE_KEY =
-  String(process.env.PAYOUT_PRIVATE_KEY || "");
+  String(
+    process.env.PAYOUT_PRIVATE_KEY || ""
+  ).trim();
 
 const PAYOUT_API_SECRET =
-  String(process.env.PAYOUT_API_SECRET || "");
+  String(
+    process.env.PAYOUT_API_SECRET || ""
+  ).trim();
+
+
+/* =========================
+   YOUTUBE OAUTH SETTINGS
+========================= */
 
 const YOUTUBE_CLIENT_ID =
-  String(process.env.YOUTUBE_CLIENT_ID || "").trim();
+  String(
+    process.env.YOUTUBE_CLIENT_ID || ""
+  ).trim();
 
 const YOUTUBE_CLIENT_SECRET =
-  String(process.env.YOUTUBE_CLIENT_SECRET || "").trim();
-
-const YOUTUBE_OAUTH_SECRET =
-  String(process.env.YOUTUBE_OAUTH_SECRET || "").trim();
+  String(
+    process.env.YOUTUBE_CLIENT_SECRET || ""
+  ).trim();
 
 const YOUTUBE_REDIRECT_URI =
   String(
     process.env.YOUTUBE_REDIRECT_URI ||
-    "https://telegram-bot-backend-production-c04c.up.railway.app/youtube/callback"
+      "https://telegram-bot-backend-production-c04c.up.railway.app/youtube/callback"
   ).trim();
+
 
 const YOUTUBE_SCOPES = [
   "https://www.googleapis.com/auth/youtube.readonly"
 ];
 
+
+/* =========================
+   MINIMUM WITHDRAW
+========================= */
+
 let MIN_WITHDRAW =
-  Number(process.env.MIN_WITHDRAW || 0.15);
+  Number(
+    process.env.MIN_WITHDRAW || 0.15
+  );
 
 if (
   !Number.isFinite(MIN_WITHDRAW) ||
@@ -54,6 +90,11 @@ if (
 ) {
   MIN_WITHDRAW = 0.15;
 }
+
+
+/* =========================
+   PAYOUT LOCK
+========================= */
 
 let payoutBusy = false;
 
@@ -65,19 +106,20 @@ const processedPayouts =
    POSTGRESQL
 ========================= */
 
-const db = new Pool({
-  connectionString:
-    process.env.DATABASE_URL,
+const db =
+  new Pool({
+    connectionString:
+      process.env.DATABASE_URL,
 
-  ssl: {
-    rejectUnauthorized: false
-  }
-});
+    ssl: {
+      rejectUnauthorized: false
+    }
+  });
 
 
-/* =========================
+/* =========================================================
    DATABASE INITIALIZATION
-========================= */
+========================================================= */
 
 async function initDatabase() {
 
@@ -89,38 +131,51 @@ async function initDatabase() {
       reward NUMERIC NOT NULL DEFAULT 0,
       verification_type TEXT NOT NULL DEFAULT 'manual',
       created_at TIMESTAMPTZ DEFAULT NOW(),
+
       UNIQUE(user_id, task_id)
     )
   `);
 
+
   await db.query(`
     CREATE TABLE IF NOT EXISTS youtube_accounts (
       user_id TEXT PRIMARY KEY,
+
       refresh_token TEXT NOT NULL,
+
       access_token TEXT,
+
       expiry_date BIGINT,
+
       created_at TIMESTAMPTZ DEFAULT NOW(),
+
       updated_at TIMESTAMPTZ DEFAULT NOW()
     )
   `);
 
+
   await db.query(`
     CREATE TABLE IF NOT EXISTS youtube_oauth_states (
       state TEXT PRIMARY KEY,
+
       user_id TEXT NOT NULL,
+
       expires_at TIMESTAMPTZ NOT NULL
     )
   `);
+
 
   await db.query(`
     ALTER TABLE "Task Plan Bot"
     ADD COLUMN IF NOT EXISTS verification_type TEXT DEFAULT 'manual'
   `);
 
+
   await db.query(`
     ALTER TABLE "Task Plan Bot"
     ADD COLUMN IF NOT EXISTS verification_target TEXT DEFAULT ''
   `);
+
 
   console.log(
     "PostgreSQL connected and tables ready"
@@ -128,9 +183,9 @@ async function initDatabase() {
 }
 
 
-/* =========================
+/* =========================================================
    TASK FUNCTIONS
-========================= */
+========================================================= */
 
 async function getTasks() {
 
@@ -268,12 +323,12 @@ async function addTask(body) {
 
         String(
           body.verification_type ||
-          "manual"
+            "manual"
         ),
 
         String(
           body.verification_target ||
-          ""
+            ""
         )
       ]
     );
@@ -336,12 +391,12 @@ async function updateTask(body) {
 
         String(
           body.verification_type ||
-          "manual"
+            "manual"
         ),
 
         String(
           body.verification_target ||
-          ""
+            ""
         )
       ]
     );
@@ -370,9 +425,9 @@ async function deleteTask(taskId) {
 }
 
 
-/* =========================
+/* =========================================================
    REQUEST BODY
-========================= */
+========================================================= */
 
 async function readBody(req) {
 
@@ -402,6 +457,7 @@ async function readBody(req) {
         }
       );
 
+
       req.on(
         "end",
         () => {
@@ -425,6 +481,7 @@ async function readBody(req) {
         }
       );
 
+
       req.on(
         "error",
         reject
@@ -434,9 +491,9 @@ async function readBody(req) {
 }
 
 
-/* =========================
+/* =========================================================
    RESPONSE
-========================= */
+========================================================= */
 
 function send(
   res,
@@ -453,6 +510,7 @@ function send(
     }
   );
 
+
   if (
     type.includes("json")
   ) {
@@ -462,22 +520,22 @@ function send(
     );
   }
 
+
   return res.end(
     data
   );
 }
 
 
-/* =========================
+/* =========================================================
    YOUTUBE CONFIG
-========================= */
+========================================================= */
 
 function youtubeConfigured() {
 
   return !!(
     YOUTUBE_CLIENT_ID &&
     YOUTUBE_CLIENT_SECRET &&
-    YOUTUBE_OAUTH_SECRET &&
     YOUTUBE_REDIRECT_URI
   );
 }
@@ -494,6 +552,7 @@ function youtubeClient() {
     );
   }
 
+
   return new google.auth.OAuth2(
     YOUTUBE_CLIENT_ID,
     YOUTUBE_CLIENT_SECRET,
@@ -502,16 +561,34 @@ function youtubeClient() {
 }
 
 
-/* =========================
-   YOUTUBE CHANNEL ID
-========================= */
+/* =========================================================
+   YOUTUBE CHANNEL TARGET
+   Supports:
 
-function channelId(value) {
+   UCxxxxxxxxxxxxxxxxxxxx
+   https://www.youtube.com/channel/UC...
+   @handle
+   https://www.youtube.com/@handle
+========================================================= */
 
-  const text =
+function extractYoutubeTarget(value) {
+
+  let text =
     String(
       value || ""
     ).trim();
+
+
+  if (!text) {
+
+    return {
+      type: "",
+      value: ""
+    };
+  }
+
+
+  /* Direct Channel ID */
 
   if (
     /^UC[a-zA-Z0-9_-]{20,}$/.test(
@@ -519,26 +596,150 @@ function channelId(value) {
     )
   ) {
 
-    return text;
+    return {
+      type: "channelId",
+      value: text
+    };
   }
 
-  const match =
+
+  /* Channel URL */
+
+  const channelMatch =
     text.match(
       /youtube\.com\/channel\/(UC[a-zA-Z0-9_-]+)/i
     );
 
-  if (match) {
+  if (
+    channelMatch
+  ) {
 
-    return match[1];
+    return {
+      type: "channelId",
+      value: channelMatch[1]
+    };
   }
 
-  return "";
+
+  /* @handle */
+
+  const handleMatch =
+    text.match(
+      /(?:youtube\.com\/)?@([a-zA-Z0-9._-]+)/i
+    );
+
+  if (
+    handleMatch
+  ) {
+
+    return {
+      type: "handle",
+      value:
+        "@" +
+        handleMatch[1]
+    };
+  }
+
+
+  return {
+    type: "",
+    value: ""
+  };
 }
 
 
-/* =========================
-   YOUTUBE VERIFY
-========================= */
+/* =========================================================
+   RESOLVE YOUTUBE CHANNEL ID
+========================================================= */
+
+async function resolveYoutubeChannelId(
+  oauth,
+  target
+) {
+
+  const parsed =
+    extractYoutubeTarget(
+      target
+    );
+
+
+  if (
+    !parsed.type
+  ) {
+
+    throw new Error(
+      "Invalid YouTube verification target. Use a YouTube channel ID, channel URL, or @handle."
+    );
+  }
+
+
+  /* Already Channel ID */
+
+  if (
+    parsed.type === "channelId"
+  ) {
+
+    return parsed.value;
+  }
+
+
+  /* Resolve @handle */
+
+  if (
+    parsed.type === "handle"
+  ) {
+
+    const youtube =
+      google.youtube({
+        version: "v3",
+        auth: oauth
+      });
+
+
+    const response =
+      await youtube.channels.list({
+
+        part: [
+          "id"
+        ],
+
+        forHandle:
+          parsed.value,
+
+        maxResults:
+          1
+      });
+
+
+    const items =
+      response.data.items || [];
+
+
+    if (
+      !items.length ||
+      !items[0].id
+    ) {
+
+      throw new Error(
+        "YouTube channel could not be found for " +
+        parsed.value
+      );
+    }
+
+
+    return items[0].id;
+  }
+
+
+  throw new Error(
+    "Could not resolve YouTube channel"
+  );
+}
+
+
+/* =========================================================
+   YOUTUBE VERIFY SUBSCRIPTION
+========================================================= */
 
 async function youtubeVerify(
   oauth,
@@ -546,16 +747,11 @@ async function youtubeVerify(
 ) {
 
   const targetChannelId =
-    channelId(target);
-
-  if (
-    !targetChannelId
-  ) {
-
-    throw new Error(
-      "verification_target must be a YouTube channel ID (UC...) or /channel/UC... URL"
+    await resolveYoutubeChannelId(
+      oauth,
+      target
     );
-  }
+
 
   const youtube =
     google.youtube({
@@ -563,22 +759,28 @@ async function youtubeVerify(
       auth: oauth
     });
 
+
   const response =
     await youtube.subscriptions.list({
+
       part: [
         "snippet"
       ],
 
-      mine: true,
+      mine:
+        true,
 
       forChannelId:
         targetChannelId,
 
-      maxResults: 1
+      maxResults:
+        1
     });
+
 
   const items =
     response.data.items || [];
+
 
   return {
 
@@ -591,9 +793,9 @@ async function youtubeVerify(
 }
 
 
-/* =========================
+/* =========================================================
    SAVE YOUTUBE TOKEN
-========================= */
+========================================================= */
 
 async function saveYoutubeToken(
   userId,
@@ -601,21 +803,30 @@ async function saveYoutubeToken(
 ) {
 
   let refreshToken =
-    tokens.refresh_token || "";
+    tokens.refresh_token ||
+    "";
 
-  if (!refreshToken) {
+
+  /* Keep old refresh token if Google
+     does not return a new one */
+
+  if (
+    !refreshToken
+  ) {
 
     const old =
       await db.query(
         `
         SELECT refresh_token
         FROM youtube_accounts
+
         WHERE user_id = $1
         `,
         [
           String(userId)
         ]
       );
+
 
     if (
       old.rows[0]
@@ -626,12 +837,16 @@ async function saveYoutubeToken(
     }
   }
 
-  if (!refreshToken) {
+
+  if (
+    !refreshToken
+  ) {
 
     throw new Error(
-      "No refresh token received"
+      "No refresh token received from YouTube"
     );
   }
+
 
   await db.query(
     `
@@ -667,14 +882,18 @@ async function saveYoutubeToken(
       refreshToken,
 
       tokens.access_token ||
-      "",
+        "",
 
       tokens.expiry_date ||
-      0
+        0
     ]
   );
 }
 
+
+/* =========================================================
+   GET YOUTUBE OAUTH FOR USER
+========================================================= */
 
 async function getYoutubeOAuthForUser(
   userId
@@ -685,12 +904,16 @@ async function getYoutubeOAuthForUser(
       `
       SELECT *
       FROM youtube_accounts
+
       WHERE user_id = $1
+
+      LIMIT 1
       `,
       [
         String(userId)
       ]
     );
+
 
   if (
     !result.rows[0]
@@ -699,13 +922,17 @@ async function getYoutubeOAuthForUser(
     return null;
   }
 
+
   const row =
     result.rows[0];
+
 
   const client =
     youtubeClient();
 
+
   client.setCredentials({
+
     refresh_token:
       row.refresh_token,
 
@@ -720,13 +947,14 @@ async function getYoutubeOAuthForUser(
       undefined
   });
 
+
   return client;
 }
 
 
-/* =========================
+/* =========================================================
    RPC REQUEST
-========================= */
+========================================================= */
 
 function rpcRequest(
   method,
@@ -736,6 +964,7 @@ function rpcRequest(
 
   const body =
     JSON.stringify({
+
       jsonrpc:
         "2.0",
 
@@ -749,14 +978,17 @@ function rpcRequest(
         params
     });
 
+
   const url =
     new URL(
       RPC_URL
     );
 
+
   const req =
     https.request(
       {
+
         hostname:
           url.hostname,
 
@@ -766,21 +998,23 @@ function rpcRequest(
         method:
           "POST",
 
-        headers:
-          {
-            "Content-Type":
-              "application/json",
+        headers: {
 
-            "Content-Length":
-              Buffer.byteLength(
-                body
-              )
-          }
+          "Content-Type":
+            "application/json",
+
+          "Content-Length":
+            Buffer.byteLength(
+              body
+            )
+        }
       },
+
 
       (res) => {
 
         let data = "";
+
 
         res.on(
           "data",
@@ -789,6 +1023,7 @@ function rpcRequest(
             data += chunk;
           }
         );
+
 
         res.on(
           "end",
@@ -801,16 +1036,19 @@ function rpcRequest(
                   data
                 );
 
+
               if (
                 json.error
               ) {
 
                 return callback({
+
                   error:
                     json.error.message ||
                     "RPC error"
                 });
               }
+
 
               callback(
                 null,
@@ -820,6 +1058,7 @@ function rpcRequest(
             } catch (error) {
 
               callback({
+
                 error:
                   "Invalid RPC response"
               });
@@ -829,25 +1068,28 @@ function rpcRequest(
       }
     );
 
+
   req.on(
     "error",
     () => {
 
       callback({
+
         error:
           "BSC RPC connection failed"
       });
     }
   );
 
+
   req.write(body);
   req.end();
 }
 
 
-/* =========================
+/* =========================================================
    PAYMENT VERIFICATION
-========================= */
+========================================================= */
 
 function verifyPayment(
   txHash,
@@ -861,6 +1103,7 @@ function verifyPayment(
   ) {
 
     return callback({
+
       verified:
         false,
 
@@ -869,15 +1112,19 @@ function verifyPayment(
     });
   }
 
+
   rpcRequest(
     "eth_getTransactionByHash",
     [txHash],
 
     (error, tx) => {
 
-      if (error) {
+      if (
+        error
+      ) {
 
         return callback({
+
           verified:
             false,
 
@@ -887,9 +1134,11 @@ function verifyPayment(
         });
       }
 
+
       if (!tx) {
 
         return callback({
+
           verified:
             false,
 
@@ -897,6 +1146,9 @@ function verifyPayment(
             "Transaction not found"
         });
       }
+
+
+      /* Must be USDT contract */
 
       if (
         String(
@@ -906,6 +1158,7 @@ function verifyPayment(
       ) {
 
         return callback({
+
           verified:
             false,
 
@@ -913,6 +1166,7 @@ function verifyPayment(
             "Transaction is not a USDT contract transaction"
         });
       }
+
 
       rpcRequest(
         "eth_getTransactionReceipt",
@@ -928,6 +1182,7 @@ function verifyPayment(
           ) {
 
             return callback({
+
               verified:
                 false,
 
@@ -937,9 +1192,13 @@ function verifyPayment(
             });
           }
 
-          if (!receipt) {
+
+          if (
+            !receipt
+          ) {
 
             return callback({
+
               verified:
                 false,
 
@@ -951,6 +1210,9 @@ function verifyPayment(
             });
           }
 
+
+          /* Transaction failed */
+
           if (
             String(
               receipt.status
@@ -959,6 +1221,7 @@ function verifyPayment(
           ) {
 
             return callback({
+
               verified:
                 false,
 
@@ -967,8 +1230,10 @@ function verifyPayment(
             });
           }
 
+
           let payment =
             null;
+
 
           for (
             const log of
@@ -980,14 +1245,14 @@ function verifyPayment(
 
             if (
               String(
-                log.address ||
-                ""
+                log.address || ""
               ).toLowerCase() !==
               USDT_CONTRACT
             ) {
 
               continue;
             }
+
 
             if (
               !log.topics ||
@@ -996,6 +1261,7 @@ function verifyPayment(
 
               continue;
             }
+
 
             if (
               String(
@@ -1007,6 +1273,7 @@ function verifyPayment(
               continue;
             }
 
+
             const from =
               "0x" +
               String(
@@ -1014,6 +1281,7 @@ function verifyPayment(
               )
                 .slice(-40)
                 .toLowerCase();
+
 
             const to =
               "0x" +
@@ -1023,6 +1291,7 @@ function verifyPayment(
                 .slice(-40)
                 .toLowerCase();
 
+
             if (
               to !==
               PAYMENT_WALLET
@@ -1030,6 +1299,7 @@ function verifyPayment(
 
               continue;
             }
+
 
             try {
 
@@ -1041,9 +1311,11 @@ function verifyPayment(
                   )
                 );
 
+
               const amount =
                 Number(raw) /
                 1e18;
+
 
               if (
                 Number.isFinite(
@@ -1070,17 +1342,20 @@ function verifyPayment(
                     receipt.blockNumber
                 };
 
+
                 break;
               }
 
             } catch (error) {}
           }
 
+
           if (
             !payment
           ) {
 
             return callback({
+
               verified:
                 false,
 
@@ -1088,6 +1363,9 @@ function verifyPayment(
                 "No BEP-20 USDT Transfer to the payment wallet was found"
             });
           }
+
+
+          /* Confirmation check */
 
           rpcRequest(
             "eth_blockNumber",
@@ -1103,6 +1381,7 @@ function verifyPayment(
               ) {
 
                 return callback({
+
                   verified:
                     false,
 
@@ -1112,8 +1391,10 @@ function verifyPayment(
                 });
               }
 
+
               let confirmations =
                 0;
+
 
               try {
 
@@ -1134,11 +1415,13 @@ function verifyPayment(
                   0;
               }
 
+
               if (
                 confirmations < 3
               ) {
 
                 return callback({
+
                   verified:
                     false,
 
@@ -1155,6 +1438,7 @@ function verifyPayment(
                     txHash
                 });
               }
+
 
               callback({
 
@@ -1194,9 +1478,9 @@ function verifyPayment(
 }
 
 
-/* =========================
+/* =========================================================
    PAYOUT
-========================= */
+========================================================= */
 
 async function sendPayout(
   walletAddress,
@@ -1213,6 +1497,7 @@ async function sendPayout(
     );
   }
 
+
   if (
     !PAYOUT_WALLET
   ) {
@@ -1222,6 +1507,7 @@ async function sendPayout(
     );
   }
 
+
   if (
     !PAYOUT_API_SECRET
   ) {
@@ -1230,6 +1516,7 @@ async function sendPayout(
       "PAYOUT_API_SECRET is missing"
     );
   }
+
 
   if (
     !/^0x[a-fA-F0-9]{40}$/.test(
@@ -1242,8 +1529,10 @@ async function sendPayout(
     );
   }
 
+
   const payoutAmount =
     Number(amount);
+
 
   if (
     !Number.isFinite(
@@ -1257,6 +1546,7 @@ async function sendPayout(
     );
   }
 
+
   if (
     payoutAmount <
     MIN_WITHDRAW
@@ -1269,6 +1559,7 @@ async function sendPayout(
     );
   }
 
+
   if (
     !clientOid ||
     String(clientOid).length < 5
@@ -1279,11 +1570,13 @@ async function sendPayout(
     );
   }
 
+
   const provider =
     new ethers.JsonRpcProvider(
       RPC_URL,
       56
     );
+
 
   const signer =
     new ethers.Wallet(
@@ -1291,10 +1584,12 @@ async function sendPayout(
       provider
     );
 
+
   const signerAddress =
     (
       await signer.getAddress()
     ).toLowerCase();
+
 
   if (
     signerAddress !==
@@ -1306,8 +1601,10 @@ async function sendPayout(
     );
   }
 
+
   const usdt =
     new ethers.Contract(
+
       USDT_CONTRACT,
 
       [
@@ -1319,16 +1616,19 @@ async function sendPayout(
       signer
     );
 
+
   const rawAmount =
     ethers.parseUnits(
       payoutAmount.toFixed(6),
       18
     );
 
+
   const usdtBalance =
     await usdt.balanceOf(
       signerAddress
     );
+
 
   if (
     usdtBalance <
@@ -1340,14 +1640,17 @@ async function sendPayout(
     );
   }
 
+
   const tx =
     await usdt.transfer(
       walletAddress,
       rawAmount
     );
 
+
   const receipt =
     await tx.wait();
+
 
   if (
     !receipt ||
@@ -1358,6 +1661,7 @@ async function sendPayout(
       "Payout transaction failed"
     );
   }
+
 
   return {
 
@@ -1382,14 +1686,22 @@ async function sendPayout(
     network:
       "BEP-20 / BSC"
   };
-}/* =========================
-   YOUTUBE OAUTH START
-========================= */
+}
 
-function createOAuthState(userId) {
+
+/* =========================================================
+   YOUTUBE OAUTH STATE
+========================================================= */
+
+function createOAuthState(
+  userId
+) {
 
   const state =
-    crypto.randomBytes(32).toString("hex");
+    crypto
+      .randomBytes(32)
+      .toString("hex");
+
 
   return db.query(
     `
@@ -1399,6 +1711,7 @@ function createOAuthState(userId) {
       user_id,
       expires_at
     )
+
     VALUES
     (
       $1,
@@ -1416,9 +1729,9 @@ function createOAuthState(userId) {
 }
 
 
-/* =========================
+/* =========================================================
    CLEAN OAUTH STATES
-========================= */
+========================================================= */
 
 async function cleanOAuthStates() {
 
@@ -1429,9 +1742,9 @@ async function cleanOAuthStates() {
 }
 
 
-/* =========================
+/* =========================================================
    YOUTUBE AUTH URL
-========================= */
+========================================================= */
 
 async function getYoutubeAuthUrl(
   userId
@@ -1446,15 +1759,19 @@ async function getYoutubeAuthUrl(
     );
   }
 
+
   await cleanOAuthStates();
+
 
   const state =
     await createOAuthState(
       userId
     );
 
+
   const oauth =
     youtubeClient();
+
 
   return oauth.generateAuthUrl({
 
@@ -1473,9 +1790,9 @@ async function getYoutubeAuthUrl(
 }
 
 
-/* =========================
+/* =========================================================
    OAUTH STATE CHECK
-========================= */
+========================================================= */
 
 async function getOAuthState(
   state
@@ -1487,9 +1804,11 @@ async function getOAuthState(
       SELECT
         state,
         user_id
+
       FROM youtube_oauth_states
 
       WHERE state = $1
+
       AND expires_at > NOW()
 
       LIMIT 1
@@ -1499,13 +1818,14 @@ async function getOAuthState(
       ]
     );
 
+
   return result.rows[0] || null;
 }
 
 
-/* =========================
+/* =========================================================
    DELETE OAUTH STATE
-========================= */
+========================================================= */
 
 async function deleteOAuthState(
   state
@@ -1523,9 +1843,9 @@ async function deleteOAuthState(
 }
 
 
-/* =========================
+/* =========================================================
    TASK COMPLETION CHECK
-========================= */
+========================================================= */
 
 async function taskAlreadyCompleted(
   userId,
@@ -1536,9 +1856,11 @@ async function taskAlreadyCompleted(
     await db.query(
       `
       SELECT id
+
       FROM task_completions
 
       WHERE user_id = $1
+
       AND task_id = $2
 
       LIMIT 1
@@ -1549,13 +1871,16 @@ async function taskAlreadyCompleted(
       ]
     );
 
-  return result.rows.length > 0;
+
+  return (
+    result.rows.length > 0
+  );
 }
 
 
-/* =========================
+/* =========================================================
    SAVE TASK COMPLETION
-========================= */
+========================================================= */
 
 async function saveTaskCompletion(
   userId,
@@ -1598,7 +1923,9 @@ async function saveTaskCompletion(
 
         Number(taskId),
 
-        Number(reward || 0),
+        Number(
+          reward || 0
+        ),
 
         String(
           verificationType ||
@@ -1607,13 +1934,14 @@ async function saveTaskCompletion(
       ]
     );
 
+
   return result.rows[0] || null;
 }
 
 
-/* =========================
+/* =========================================================
    YOUTUBE VERIFY TASK
-========================= */
+========================================================= */
 
 async function verifyYoutubeTask(
   userId,
@@ -1624,6 +1952,7 @@ async function verifyYoutubeTask(
     await getTask(
       taskId
     );
+
 
   if (!task) {
 
@@ -1639,6 +1968,7 @@ async function verifyYoutubeTask(
         "Task not found"
     };
   }
+
 
   if (
     String(
@@ -1660,15 +1990,19 @@ async function verifyYoutubeTask(
     };
   }
 
+
   const type =
     String(
       task.verification_type ||
       "manual"
     ).toLowerCase();
 
+
   if (
-    type !== "youtube_subscribe" &&
-    type !== "youtube"
+    type !==
+      "youtube_subscribe" &&
+    type !==
+      "youtube"
   ) {
 
     return {
@@ -1684,11 +2018,13 @@ async function verifyYoutubeTask(
     };
   }
 
+
   const already =
     await taskAlreadyCompleted(
       userId,
       task.task_id
     );
+
 
   if (already) {
 
@@ -1713,10 +2049,12 @@ async function verifyYoutubeTask(
     };
   }
 
+
   const oauth =
     await getYoutubeOAuthForUser(
       userId
     );
+
 
   if (!oauth) {
 
@@ -1736,11 +2074,40 @@ async function verifyYoutubeTask(
     };
   }
 
+
+  const target =
+    String(
+      task.verification_target ||
+      task.link ||
+      ""
+    ).trim();
+
+
+  if (!target) {
+
+    return {
+
+      success:
+        false,
+
+      verified:
+        false,
+
+      connected:
+        true,
+
+      error:
+        "YouTube verification target is missing"
+    };
+  }
+
+
   const check =
     await youtubeVerify(
       oauth,
-      task.verification_target
+      target
     );
+
 
   if (
     !check.verified
@@ -1765,13 +2132,18 @@ async function verifyYoutubeTask(
           task.reward || 0
         ),
 
+      channelId:
+        check.channelId,
+
       message:
         "YouTube channel subscription not found"
     };
   }
 
+
   const completion =
     await saveTaskCompletion(
+
       userId,
 
       task.task_id,
@@ -1782,6 +2154,7 @@ async function verifyYoutubeTask(
 
       type
     );
+
 
   if (!completion) {
 
@@ -1806,6 +2179,7 @@ async function verifyYoutubeTask(
     };
   }
 
+
   return {
 
     success:
@@ -1823,20 +2197,24 @@ async function verifyYoutubeTask(
     reward:
       Number(
         task.reward || 0
-      )
+      ),
+
+    channelId:
+      check.channelId
   };
 }
 
 
-/* =========================
+/* =========================================================
    HTTP SERVER
-========================= */
+========================================================= */
 
 const server =
   http.createServer(
     async (req, res) => {
 
       let parsed;
+
 
       try {
 
@@ -1852,6 +2230,7 @@ const server =
           res,
           400,
           {
+
             success:
               false,
 
@@ -1862,9 +2241,9 @@ const server =
       }
 
 
-      /* =========================
+      /* =====================================================
          HOME
-      ========================= */
+      ===================================================== */
 
       if (
         req.method === "GET" &&
@@ -1872,17 +2251,21 @@ const server =
       ) {
 
         return send(
+
           res,
+
           200,
+
           "Telegram Bot Backend is running!",
+
           "text/plain"
         );
       }
 
 
-      /* =========================
+      /* =====================================================
          HEALTH
-      ========================= */
+      ===================================================== */
 
       if (
         req.method === "GET" &&
@@ -1893,6 +2276,7 @@ const server =
           res,
           200,
           {
+
             success:
               true,
 
@@ -1903,9 +2287,9 @@ const server =
       }
 
 
-      /* =========================
+      /* =====================================================
          GET TASKS
-      ========================= */
+      ===================================================== */
 
       if (
         req.method === "GET" &&
@@ -1917,10 +2301,12 @@ const server =
           const tasks =
             await getTasks();
 
+
           return send(
             res,
             200,
             {
+
               success:
                 true,
 
@@ -1936,10 +2322,12 @@ const server =
             error.message
           );
 
+
           return send(
             res,
             500,
             {
+
               success:
                 false,
 
@@ -1951,9 +2339,9 @@ const server =
       }
 
 
-      /* =========================
+      /* =====================================================
          GET SINGLE TASK
-      ========================= */
+      ===================================================== */
 
       if (
         req.method === "GET" &&
@@ -1965,12 +2353,14 @@ const server =
             "task_id"
           );
 
+
         if (!taskId) {
 
           return send(
             res,
             400,
             {
+
               success:
                 false,
 
@@ -1980,6 +2370,7 @@ const server =
           );
         }
 
+
         try {
 
           const task =
@@ -1987,10 +2378,12 @@ const server =
               taskId
             );
 
+
           return send(
             res,
             200,
             {
+
               success:
                 true,
 
@@ -2005,6 +2398,7 @@ const server =
             res,
             500,
             {
+
               success:
                 false,
 
@@ -2016,9 +2410,9 @@ const server =
       }
 
 
-      /* =========================
+      /* =====================================================
          ADD TASK
-      ========================= */
+      ===================================================== */
 
       if (
         req.method === "POST" &&
@@ -2030,10 +2424,12 @@ const server =
           const body =
             await readBody(req);
 
+
           const taskId =
             Number(
               body.task_id
             );
+
 
           if (
             !Number.isInteger(
@@ -2047,10 +2443,12 @@ const server =
             );
           }
 
+
           const title =
             String(
               body.title || ""
             ).trim();
+
 
           if (!title) {
 
@@ -2059,10 +2457,12 @@ const server =
             );
           }
 
+
           const reward =
             Number(
               body.reward
             );
+
 
           if (
             !Number.isFinite(
@@ -2076,10 +2476,12 @@ const server =
             );
           }
 
+
           const existing =
             await getTask(
               taskId
             );
+
 
           if (existing) {
 
@@ -2087,6 +2489,7 @@ const server =
               res,
               409,
               {
+
                 success:
                   false,
 
@@ -2096,15 +2499,18 @@ const server =
             );
           }
 
+
           const task =
             await addTask(
               body
             );
 
+
           return send(
             res,
             201,
             {
+
               success:
                 true,
 
@@ -2120,10 +2526,12 @@ const server =
             error.message
           );
 
+
           return send(
             res,
             400,
             {
+
               success:
                 false,
 
@@ -2135,9 +2543,9 @@ const server =
       }
 
 
-      /* =========================
+      /* =====================================================
          UPDATE TASK
-      ========================= */
+      ===================================================== */
 
       if (
         req.method === "PUT" &&
@@ -2149,10 +2557,12 @@ const server =
           const body =
             await readBody(req);
 
+
           const taskId =
             Number(
               body.task_id
             );
+
 
           if (
             !Number.isInteger(
@@ -2166,10 +2576,12 @@ const server =
             );
           }
 
+
           const title =
             String(
               body.title || ""
             ).trim();
+
 
           if (!title) {
 
@@ -2178,10 +2590,12 @@ const server =
             );
           }
 
+
           const reward =
             Number(
               body.reward
             );
+
 
           if (
             !Number.isFinite(
@@ -2195,10 +2609,12 @@ const server =
             );
           }
 
+
           const task =
             await updateTask(
               body
             );
+
 
           if (!task) {
 
@@ -2206,6 +2622,7 @@ const server =
               res,
               404,
               {
+
                 success:
                   false,
 
@@ -2215,10 +2632,12 @@ const server =
             );
           }
 
+
           return send(
             res,
             200,
             {
+
               success:
                 true,
 
@@ -2233,6 +2652,7 @@ const server =
             res,
             400,
             {
+
               success:
                 false,
 
@@ -2244,9 +2664,9 @@ const server =
       }
 
 
-      /* =========================
+      /* =====================================================
          DELETE TASK
-      ========================= */
+      ===================================================== */
 
       if (
         req.method === "DELETE" &&
@@ -2258,12 +2678,14 @@ const server =
             "task_id"
           );
 
+
         if (!taskId) {
 
           return send(
             res,
             400,
             {
+
               success:
                 false,
 
@@ -2273,6 +2695,7 @@ const server =
           );
         }
 
+
         try {
 
           const task =
@@ -2280,12 +2703,14 @@ const server =
               taskId
             );
 
+
           if (!task) {
 
             return send(
               res,
               404,
               {
+
                 success:
                   false,
 
@@ -2295,10 +2720,12 @@ const server =
             );
           }
 
+
           return send(
             res,
             200,
             {
+
               success:
                 true,
 
@@ -2313,6 +2740,7 @@ const server =
             res,
             500,
             {
+
               success:
                 false,
 
@@ -2324,14 +2752,14 @@ const server =
       }
 
 
-      /* =========================
+      /* =====================================================
          YOUTUBE CONNECT
-========================= */
+      ===================================================== */
 
       if (
         req.method === "GET" &&
         parsed.pathname ===
-        "/youtube/connect"
+          "/youtube/connect"
       ) {
 
         const userId =
@@ -2339,12 +2767,14 @@ const server =
             "user_id"
           );
 
+
         if (!userId) {
 
           return send(
             res,
             400,
             {
+
               success:
                 false,
 
@@ -2354,6 +2784,7 @@ const server =
           );
         }
 
+
         try {
 
           const url =
@@ -2361,10 +2792,12 @@ const server =
               userId
             );
 
+
           return send(
             res,
             200,
             {
+
               success:
                 true,
 
@@ -2380,10 +2813,12 @@ const server =
             error.message
           );
 
+
           return send(
             res,
             500,
             {
+
               success:
                 false,
 
@@ -2395,14 +2830,14 @@ const server =
       }
 
 
-      /* =========================
+      /* =====================================================
          YOUTUBE CALLBACK
-      ========================= */
+      ===================================================== */
 
       if (
         req.method === "GET" &&
         parsed.pathname ===
-        "/youtube/callback"
+          "/youtube/callback"
       ) {
 
         const code =
@@ -2410,10 +2845,12 @@ const server =
             "code"
           );
 
+
         const state =
           parsed.searchParams.get(
             "state"
           );
+
 
         if (
           !code ||
@@ -2424,6 +2861,7 @@ const server =
             res,
             400,
             {
+
               success:
                 false,
 
@@ -2433,12 +2871,14 @@ const server =
           );
         }
 
+
         try {
 
           const oauthState =
             await getOAuthState(
               state
             );
+
 
           if (
             !oauthState
@@ -2448,6 +2888,7 @@ const server =
               res,
               400,
               {
+
                 success:
                   false,
 
@@ -2457,27 +2898,33 @@ const server =
             );
           }
 
+
           const oauth =
             youtubeClient();
+
 
           const tokenResult =
             await oauth.getToken(
               code
             );
 
+
           await saveYoutubeToken(
             oauthState.user_id,
             tokenResult.tokens
           );
 
+
           await deleteOAuthState(
             state
           );
+
 
           return send(
             res,
             200,
             {
+
               success:
                 true,
 
@@ -2493,10 +2940,12 @@ const server =
             error.message
           );
 
+
           return send(
             res,
             500,
             {
+
               success:
                 false,
 
@@ -2508,14 +2957,14 @@ const server =
       }
 
 
-      /* =========================
+      /* =====================================================
          YOUTUBE STATUS
-      ========================= */
+      ===================================================== */
 
       if (
         req.method === "GET" &&
         parsed.pathname ===
-        "/youtube/status"
+          "/youtube/status"
       ) {
 
         const userId =
@@ -2523,12 +2972,14 @@ const server =
             "user_id"
           );
 
+
         if (!userId) {
 
           return send(
             res,
             400,
             {
+
               success:
                 false,
 
@@ -2538,14 +2989,18 @@ const server =
           );
         }
 
+
         try {
 
           const result =
             await db.query(
               `
               SELECT user_id
+
               FROM youtube_accounts
+
               WHERE user_id = $1
+
               LIMIT 1
               `,
               [
@@ -2553,10 +3008,12 @@ const server =
               ]
             );
 
+
           return send(
             res,
             200,
             {
+
               success:
                 true,
 
@@ -2571,6 +3028,7 @@ const server =
             res,
             500,
             {
+
               success:
                 false,
 
@@ -2582,14 +3040,14 @@ const server =
       }
 
 
-      /* =========================
+      /* =====================================================
          YOUTUBE VERIFY
-      ========================= */
+      ===================================================== */
 
       if (
         req.method === "GET" &&
         parsed.pathname ===
-        "/youtube/verify"
+          "/youtube/verify"
       ) {
 
         const userId =
@@ -2597,10 +3055,12 @@ const server =
             "user_id"
           );
 
+
         const taskId =
           parsed.searchParams.get(
             "task_id"
           );
+
 
         if (
           !userId ||
@@ -2611,6 +3071,7 @@ const server =
             res,
             400,
             {
+
               success:
                 false,
 
@@ -2620,6 +3081,32 @@ const server =
           );
         }
 
+
+        if (
+          !Number.isInteger(
+            Number(taskId)
+          ) ||
+          Number(taskId) <= 0
+        ) {
+
+          return send(
+            res,
+            400,
+            {
+
+              success:
+                false,
+
+              verified:
+                false,
+
+              error:
+                "Invalid task_id"
+            }
+          );
+        }
+
+
         try {
 
           const result =
@@ -2627,6 +3114,7 @@ const server =
               userId,
               Number(taskId)
             );
+
 
           return send(
             res,
@@ -2641,10 +3129,12 @@ const server =
             error.message
           );
 
+
           return send(
             res,
             500,
             {
+
               success:
                 false,
 
@@ -2659,14 +3149,14 @@ const server =
       }
 
 
-      /* =========================
+      /* =====================================================
          PAYMENT VERIFY
-      ========================= */
+      ===================================================== */
 
       if (
         req.method === "GET" &&
         parsed.pathname ===
-        "/verify-payment"
+          "/verify-payment"
       ) {
 
         const txid =
@@ -2674,12 +3164,14 @@ const server =
             "txid"
           );
 
+
         if (!txid) {
 
           return send(
             res,
             400,
             {
+
               verified:
                 false,
 
@@ -2689,13 +3181,17 @@ const server =
           );
         }
 
+
         verifyPayment(
+
           txid,
 
           (result) => {
 
             send(
+
               res,
+
               result.error
                 ? 502
                 : 200,
@@ -2705,17 +3201,19 @@ const server =
           }
         );
 
+
         return;
       }
 
 
-      /* =========================
+      /* =====================================================
          PAYOUT
-      ========================= */
+      ===================================================== */
 
       if (
         req.method === "POST" &&
-        parsed.pathname === "/payout"
+        parsed.pathname ===
+          "/payout"
       ) {
 
         const providedSecret =
@@ -2725,16 +3223,18 @@ const server =
             ] || ""
           );
 
+
         if (
           !PAYOUT_API_SECRET ||
           providedSecret !==
-          PAYOUT_API_SECRET
+            PAYOUT_API_SECRET
         ) {
 
           return send(
             res,
             401,
             {
+
               success:
                 false,
 
@@ -2744,6 +3244,7 @@ const server =
           );
         }
 
+
         if (
           payoutBusy
         ) {
@@ -2752,6 +3253,7 @@ const server =
             res,
             429,
             {
+
               success:
                 false,
 
@@ -2761,25 +3263,30 @@ const server =
           );
         }
 
+
         try {
 
           const body =
             await readBody(req);
+
 
           const wallet =
             String(
               body.wallet || ""
             ).trim();
 
+
           const amount =
             Number(
               body.amount
             );
 
+
           const clientOid =
             String(
               body.clientOid || ""
             ).trim();
+
 
           if (
             !clientOid
@@ -2789,6 +3296,7 @@ const server =
               "clientOid is required"
             );
           }
+
 
           if (
             processedPayouts.has(
@@ -2800,6 +3308,7 @@ const server =
               res,
               409,
               {
+
                 success:
                   false,
 
@@ -2809,8 +3318,10 @@ const server =
             );
           }
 
+
           payoutBusy =
             true;
+
 
           const result =
             await sendPayout(
@@ -2819,9 +3330,11 @@ const server =
               clientOid
             );
 
+
           processedPayouts.add(
             clientOid
           );
+
 
           return send(
             res,
@@ -2836,10 +3349,12 @@ const server =
             error.message
           );
 
+
           return send(
             res,
             400,
             {
+
               success:
                 false,
 
@@ -2857,14 +3372,15 @@ const server =
       }
 
 
-      /* =========================
+      /* =====================================================
          NOT FOUND
-      ========================= */
+      ===================================================== */
 
       return send(
         res,
         404,
         {
+
           success:
             false,
 
@@ -2876,12 +3392,14 @@ const server =
   );
 
 
-/* =========================
+/* =========================================================
    START SERVER
-========================= */
+========================================================= */
 
 server.listen(
+
   PORT,
+
   "0.0.0.0",
 
   async () => {
@@ -2890,33 +3408,40 @@ server.listen(
       "================================="
     );
 
+
     console.log(
       "Telegram Bot Backend Started"
     );
 
+
     console.log(
       "================================="
     );
+
 
     console.log(
       "Server running on port",
       PORT
     );
 
+
     console.log(
       "Payment wallet:",
       PAYMENT_WALLET
     );
+
 
     console.log(
       "USDT contract:",
       USDT_CONTRACT
     );
 
+
     console.log(
       "Payout wallet:",
       PAYOUT_WALLET
     );
+
 
     console.log(
       "Minimum withdraw:",
@@ -2924,12 +3449,14 @@ server.listen(
       "USDT"
     );
 
+
     console.log(
       "YouTube OAuth:",
       youtubeConfigured()
         ? "Configured"
         : "NOT CONFIGURED"
     );
+
 
     try {
 
