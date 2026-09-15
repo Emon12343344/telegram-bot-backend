@@ -3,192 +3,147 @@ const https = require("https");
 const { ethers } = require("ethers");
 const { Pool } = require("pg");
 const { google } = require("googleapis");
-const crypto = require("crypto");
 
 const PORT = process.env.PORT || 3000;
 
-const RPC_URL =
-  "https://bsc-dataseed.bnbchain.org";
+/* =========================
+   POSTGRESQL
+========================= */
 
+const db = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false
+  }
+});
 
 /* =========================
    PAYMENT SETTINGS
 ========================= */
 
 const PAYMENT_WALLET =
-  "0x07207Bf282B4e3dc2db376F29e40bfbc7d61607B"
-    .toLowerCase();
+  "0x07207Bf282B4e3dc2db376F29e40bfbc7d61607B".toLowerCase();
+
+const RPC_URL =
+  "https://bsc-dataseed.bnbchain.org";
 
 const USDT_CONTRACT =
-  "0x55d398326f99059ff775485246999027b3197955"
-    .toLowerCase();
+  "0x55d398326f99059ff775485246999027b3197955".toLowerCase();
 
 const TRANSFER_TOPIC =
   "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
-
 
 /* =========================
    PAYOUT SETTINGS
 ========================= */
 
 const PAYOUT_WALLET =
-  String(
-    process.env.PAYOUT_WALLET || ""
-  )
-    .trim()
-    .toLowerCase();
+  String(process.env.PAYOUT_WALLET || "").toLowerCase();
 
 const PAYOUT_PRIVATE_KEY =
-  String(
-    process.env.PAYOUT_PRIVATE_KEY || ""
-  ).trim();
+  String(process.env.PAYOUT_PRIVATE_KEY || "");
 
 const PAYOUT_API_SECRET =
-  String(
-    process.env.PAYOUT_API_SECRET || ""
-  ).trim();
+  String(process.env.PAYOUT_API_SECRET || "");
 
+let MIN_WITHDRAW =
+  Number(process.env.MIN_WITHDRAW || 0.15);
+
+if (!Number.isFinite(MIN_WITHDRAW) || MIN_WITHDRAW <= 0) {
+  MIN_WITHDRAW = 0.15;
+}
+
+let payoutBusy = false;
+const processedPayouts = new Set();
 
 /* =========================
-   YOUTUBE OAUTH SETTINGS
+   YOUTUBE SETTINGS
 ========================= */
 
 const YOUTUBE_CLIENT_ID =
-  String(
-    process.env.YOUTUBE_CLIENT_ID || ""
-  ).trim();
+  String(process.env.YOUTUBE_CLIENT_ID || "").trim();
 
 const YOUTUBE_CLIENT_SECRET =
-  String(
-    process.env.YOUTUBE_CLIENT_SECRET || ""
-  ).trim();
+  String(process.env.YOUTUBE_CLIENT_SECRET || "").trim();
+
+const YOUTUBE_OAUTH_SECRET =
+  String(process.env.YOUTUBE_OAUTH_SECRET || "").trim();
 
 const YOUTUBE_REDIRECT_URI =
   String(
     process.env.YOUTUBE_REDIRECT_URI ||
-      "https://telegram-bot-backend-production-c04c.up.railway.app/youtube/callback"
+    "https://telegram-bot-backend-production-c04c.up.railway.app/youtube/callback"
   ).trim();
-
 
 const YOUTUBE_SCOPES = [
   "https://www.googleapis.com/auth/youtube.readonly"
 ];
 
-
 /* =========================
-   MINIMUM WITHDRAW
+   TELEGRAM VERIFICATION
 ========================= */
 
-let MIN_WITHDRAW =
-  Number(
-    process.env.MIN_WITHDRAW || 0.15
-  );
+const TELEGRAM_BOT_TOKEN =
+  String(process.env.TELEGRAM_BOT_TOKEN || "").trim();
 
-if (
-  !Number.isFinite(MIN_WITHDRAW) ||
-  MIN_WITHDRAW <= 0
-) {
-  MIN_WITHDRAW = 0.15;
-}
-
+const TELEGRAM_API =
+  TELEGRAM_BOT_TOKEN
+    ? "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN
+    : "";
 
 /* =========================
-   PAYOUT LOCK
+   YOUTUBE CONFIG
 ========================= */
 
-let payoutBusy = false;
-
-const processedPayouts =
-  new Set();
-
-
-/* =========================
-   POSTGRESQL
-========================= */
-
-const db =
-  new Pool({
-    connectionString:
-      process.env.DATABASE_URL,
-
-    ssl: {
-      rejectUnauthorized: false
-    }
-  });
-
-
-/* =========================================================
-   DATABASE INITIALIZATION
-========================================================= */
-
-async function initDatabase() {
-
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS task_completions (
-      id BIGSERIAL PRIMARY KEY,
-      user_id TEXT NOT NULL,
-      task_id INTEGER NOT NULL,
-      reward NUMERIC NOT NULL DEFAULT 0,
-      verification_type TEXT NOT NULL DEFAULT 'manual',
-      created_at TIMESTAMPTZ DEFAULT NOW(),
-
-      UNIQUE(user_id, task_id)
-    )
-  `);
-
-
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS youtube_accounts (
-      user_id TEXT PRIMARY KEY,
-
-      refresh_token TEXT NOT NULL,
-
-      access_token TEXT,
-
-      expiry_date BIGINT,
-
-      created_at TIMESTAMPTZ DEFAULT NOW(),
-
-      updated_at TIMESTAMPTZ DEFAULT NOW()
-    )
-  `);
-
-
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS youtube_oauth_states (
-      state TEXT PRIMARY KEY,
-
-      user_id TEXT NOT NULL,
-
-      expires_at TIMESTAMPTZ NOT NULL
-    )
-  `);
-
-
-  await db.query(`
-    ALTER TABLE "Task Plan Bot"
-    ADD COLUMN IF NOT EXISTS verification_type TEXT DEFAULT 'manual'
-  `);
-
-
-  await db.query(`
-    ALTER TABLE "Task Plan Bot"
-    ADD COLUMN IF NOT EXISTS verification_target TEXT DEFAULT ''
-  `);
-
-
-  console.log(
-    "PostgreSQL connected and tables ready"
+function youtubeConfigured() {
+  return !!(
+    YOUTUBE_CLIENT_ID &&
+    YOUTUBE_CLIENT_SECRET &&
+    YOUTUBE_OAUTH_SECRET &&
+    YOUTUBE_REDIRECT_URI
   );
 }
 
+function createYoutubeOAuthClient() {
+  if (!youtubeConfigured()) {
+    throw new Error(
+      "YouTube OAuth variables are not fully configured"
+    );
+  }
 
-/* =========================================================
-   TASK FUNCTIONS
-========================================================= */
+  return new google.auth.OAuth2(
+    YOUTUBE_CLIENT_ID,
+    YOUTUBE_CLIENT_SECRET,
+    YOUTUBE_REDIRECT_URI
+  );
+}
+
+/* =========================
+   DATABASE TEST
+========================= */
+
+async function testDatabase() {
+  try {
+    const result =
+      await db.query("SELECT NOW()");
+
+    console.log(
+      "PostgreSQL connected:",
+      result.rows[0].now
+    );
+  } catch (error) {
+    console.error(
+      "PostgreSQL connection error:",
+      error.message
+    );
+  }
+}
+
+/* =========================
+   TASK DATABASE FUNCTIONS
+========================= */
 
 async function getTasks() {
-
   const result =
     await db.query(`
       SELECT
@@ -199,28 +154,16 @@ async function getTasks() {
         link,
         reward,
         status,
-
-        COALESCE(
-          verification_type,
-          'manual'
-        ) AS verification_type,
-
-        COALESCE(
-          verification_target,
-          ''
-        ) AS verification_target
-
+        COALESCE(verification_type, 'manual') AS verification_type,
+        COALESCE(verification_target, '') AS verification_target
       FROM "Task Plan Bot"
-
       ORDER BY task_id ASC
     `);
 
   return result.rows;
 }
 
-
 async function getTask(taskId) {
-
   const result =
     await db.query(
       `
@@ -232,61 +175,44 @@ async function getTask(taskId) {
         link,
         reward,
         status,
-
-        COALESCE(
-          verification_type,
-          'manual'
-        ) AS verification_type,
-
-        COALESCE(
-          verification_target,
-          ''
-        ) AS verification_target
-
+        COALESCE(verification_type, 'manual') AS verification_type,
+        COALESCE(verification_target, '') AS verification_target
       FROM "Task Plan Bot"
-
       WHERE task_id = $1
-
       LIMIT 1
       `,
-      [
-        Number(taskId)
-      ]
+      [Number(taskId)]
     );
 
   return result.rows[0] || null;
 }
 
-
-async function addTask(body) {
-
+async function addTask(
+  taskId,
+  title,
+  description,
+  link,
+  reward,
+  status,
+  verificationType,
+  verificationTarget
+) {
   const result =
     await db.query(
       `
       INSERT INTO "Task Plan Bot"
-      (
-        task_id,
-        title,
-        description,
-        link,
-        reward,
-        status,
-        verification_type,
-        verification_target
-      )
-
+        (
+          task_id,
+          title,
+          description,
+          link,
+          reward,
+          status,
+          verification_type,
+          verification_target
+        )
       VALUES
-      (
-        $1,
-        $2,
-        $3,
-        $4,
-        $5,
-        $6,
-        $7,
-        $8
-      )
-
+        ($1,$2,$3,$4,$5,$6,$7,$8)
       RETURNING
         id,
         task_id,
@@ -299,51 +225,34 @@ async function addTask(body) {
         verification_target
       `,
       [
-        Number(body.task_id),
-
-        String(
-          body.title || ""
-        ),
-
-        String(
-          body.description || ""
-        ),
-
-        String(
-          body.link || ""
-        ),
-
-        Number(
-          body.reward || 0.05
-        ),
-
-        String(
-          body.status || "active"
-        ),
-
-        String(
-          body.verification_type ||
-            "manual"
-        ),
-
-        String(
-          body.verification_target ||
-            ""
-        )
+        Number(taskId),
+        String(title),
+        String(description || ""),
+        String(link || ""),
+        Number(reward || 0.05),
+        String(status || "active"),
+        String(verificationType || "manual"),
+        String(verificationTarget || "")
       ]
     );
 
   return result.rows[0];
 }
 
-
-async function updateTask(body) {
-
+async function updateTask(
+  taskId,
+  title,
+  description,
+  link,
+  reward,
+  status,
+  verificationType,
+  verificationTarget
+) {
   const result =
     await db.query(
       `
       UPDATE "Task Plan Bot"
-
       SET
         title = $2,
         description = $3,
@@ -352,9 +261,7 @@ async function updateTask(body) {
         status = $6,
         verification_type = $7,
         verification_target = $8
-
       WHERE task_id = $1
-
       RETURNING
         id,
         task_id,
@@ -367,36 +274,117 @@ async function updateTask(body) {
         verification_target
       `,
       [
-        Number(body.task_id),
+        Number(taskId),
+        String(title),
+        String(description || ""),
+        String(link || ""),
+        Number(reward || 0.05),
+        String(status || "active"),
+        String(verificationType || "manual"),
+        String(verificationTarget || "")
+      ]
+    );
 
+  return result.rows[0] || null;
+}
+
+async function deleteTask(taskId) {
+  const result =
+    await db.query(
+      `
+      DELETE FROM "Task Plan Bot"
+      WHERE task_id = $1
+      RETURNING
+        id,
+        task_id,
+        title,
+        description,
+        link,
+        reward,
+        status,
+        verification_type,
+        verification_target
+      `,
+      [Number(taskId)]
+    );
+
+  return result.rows[0] || null;
+}
+
+/* =========================
+   TASK COMPLETION DATABASE
+========================= */
+
+async function ensureTaskCompletionTable() {
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS task_completions (
+      id BIGSERIAL PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      task_id INTEGER NOT NULL,
+      reward NUMERIC NOT NULL DEFAULT 0,
+      verification_type TEXT NOT NULL DEFAULT 'manual',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(user_id, task_id)
+    )
+  `);
+}
+
+async function taskAlreadyCompleted(
+  userId,
+  taskId
+) {
+  const result =
+    await db.query(
+      `
+      SELECT id
+      FROM task_completions
+      WHERE user_id = $1
+        AND task_id = $2
+      LIMIT 1
+      `,
+      [
+        String(userId),
+        Number(taskId)
+      ]
+    );
+
+  return result.rows.length > 0;
+}
+
+async function saveTaskCompletion(
+  userId,
+  taskId,
+  reward,
+  verificationType
+) {
+  const result =
+    await db.query(
+      `
+      INSERT INTO task_completions
+        (
+          user_id,
+          task_id,
+          reward,
+          verification_type
+        )
+      VALUES
+        ($1,$2,$3,$4)
+      ON CONFLICT
+        (user_id, task_id)
+      DO NOTHING
+      RETURNING
+        id,
+        user_id,
+        task_id,
+        reward
+      `,
+      [
+        String(userId),
+        Number(taskId),
+        Number(reward || 0),
         String(
-          body.title || ""
-        ),
-
-        String(
-          body.description || ""
-        ),
-
-        String(
-          body.link || ""
-        ),
-
-        Number(
-          body.reward || 0.05
-        ),
-
-        String(
-          body.status || "active"
-        ),
-
-        String(
-          body.verification_type ||
-            "manual"
-        ),
-
-        String(
-          body.verification_target ||
-            ""
+          verificationType ||
+          "manual"
         )
       ]
     );
@@ -404,48 +392,427 @@ async function updateTask(body) {
   return result.rows[0] || null;
 }
 
+/* =========================
+   YOUTUBE HELPERS
+========================= */
 
-async function deleteTask(taskId) {
+function extractYouTubeChannelId(value) {
+  const text =
+    String(value || "").trim();
 
-  const result =
-    await db.query(
-      `
-      DELETE FROM "Task Plan Bot"
+  if (
+    /^UC[a-zA-Z0-9_-]{20,}$/.test(text)
+  ) {
+    return text;
+  }
 
-      WHERE task_id = $1
-
-      RETURNING *
-      `,
-      [
-        Number(taskId)
-      ]
+  const match =
+    text.match(
+      /youtube\.com\/channel\/(UC[a-zA-Z0-9_-]+)/i
     );
 
-  return result.rows[0] || null;
+  if (match) {
+    return match[1];
+  }
+
+  return "";
 }
 
+async function getYoutubeChannelIdFromUrl(
+  urlValue
+) {
+  const direct =
+    extractYouTubeChannelId(urlValue);
 
-/* =========================================================
-   REQUEST BODY
-========================================================= */
+  if (direct) {
+    return direct;
+  }
 
-async function readBody(req) {
+  const text =
+    String(urlValue || "").trim();
 
+  const handleMatch =
+    text.match(
+      /youtube\.com\/@([a-zA-Z0-9._-]+)/i
+    );
+
+  if (
+    !handleMatch ||
+    !handleMatch[1]
+  ) {
+    throw new Error(
+      "YouTube channel URL is invalid"
+    );
+  }
+
+  const handle =
+    handleMatch[1];
+
+  const response =
+    await google.youtube(
+      {
+        version: "v3",
+        auth: YOUTUBE_CLIENT_ID
+      }
+    ).channels.list({
+      part: "id",
+      forHandle: handle
+    });
+
+  if (
+    !response.data.items ||
+    !response.data.items.length
+  ) {
+    throw new Error(
+      "YouTube channel not found"
+    );
+  }
+
+  return response.data.items[0].id;
+}
+
+async function verifyYoutubeSubscription(
+  oauthClient,
+  targetChannelId
+) {
+  const youtube =
+    google.youtube({
+      version: "v3",
+      auth: oauthClient
+    });
+
+  const response =
+    await youtube.subscriptions.list({
+      part: "snippet",
+      mine: true,
+      maxResults: 50
+    });
+
+  const items =
+    response.data.items || [];
+
+  const found =
+    items.some(
+      (item) =>
+        item &&
+        item.snippet &&
+        item.snippet.resourceId &&
+        item.snippet.resourceId.channelId ===
+          targetChannelId
+    );
+
+  return {
+    verified: found
+  };
+}
+
+/* =========================
+   TELEGRAM HELPERS
+========================= */
+
+function extractTelegramChatTarget(
+  value
+) {
+  const text =
+    String(value || "").trim();
+
+  if (!text) {
+    return "";
+  }
+
+  if (
+    /^@[a-zA-Z0-9_]{5,}$/.test(text)
+  ) {
+    return text;
+  }
+
+  let match =
+    text.match(
+      /^(?:https?:\/\/)?t\.me\/([a-zA-Z0-9_]{5,})\/?$/i
+    );
+
+  if (match) {
+    return "@" + match[1];
+  }
+
+  match =
+    text.match(
+      /^(?:https?:\/\/)?telegram\.me\/([a-zA-Z0-9_]{5,})\/?$/i
+    );
+
+  if (match) {
+    return "@" + match[1];
+  }
+
+  return "";
+}
+
+function telegramApi(
+  method,
+  payload
+) {
   return new Promise(
     (resolve, reject) => {
+      if (!TELEGRAM_API) {
+        reject(
+          new Error(
+            "TELEGRAM_BOT_TOKEN is not configured"
+          )
+        );
+        return;
+      }
 
+      const data =
+        JSON.stringify(payload || {});
+
+      const url =
+        TELEGRAM_API +
+        "/" +
+        method;
+
+      const request =
+        https.request(
+          url,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type":
+                "application/json",
+              "Content-Length":
+                Buffer.byteLength(data)
+            }
+          },
+          (response) => {
+            let body = "";
+
+            response.on(
+              "data",
+              (chunk) => {
+                body += chunk;
+              }
+            );
+
+            response.on(
+              "end",
+              () => {
+                try {
+                  const parsed =
+                    JSON.parse(body);
+
+                  if (
+                    parsed &&
+                    parsed.ok
+                  ) {
+                    resolve(
+                      parsed.result
+                    );
+                  } else {
+                    reject(
+                      new Error(
+                        parsed &&
+                        parsed.description
+                          ? parsed.description
+                          : "Telegram API error"
+                      )
+                    );
+                  }
+                } catch (error) {
+                  reject(
+                    new Error(
+                      "Invalid Telegram API response"
+                    )
+                  );
+                }
+              }
+            );
+          }
+        );
+
+      request.on(
+        "error",
+        reject
+      );
+
+      request.write(data);
+      request.end();
+    }
+  );
+}
+
+async function telegramCheckMembership(
+  chatTarget,
+  userId
+) {
+  const member =
+    await telegramApi(
+      "getChatMember",
+      {
+        chat_id: chatTarget,
+        user_id: Number(userId)
+      }
+    );
+
+  if (!member) {
+    return false;
+  }
+
+  if (
+    member.status ===
+      "creator" ||
+    member.status ===
+      "administrator" ||
+    member.status ===
+      "member"
+  ) {
+    return true;
+  }
+
+  if (
+    member.status ===
+      "restricted" &&
+    member.is_member === true
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+async function verifyTelegramTask(
+  userId,
+  taskId
+) {
+  const task =
+    await getTask(taskId);
+
+  if (!task) {
+    return {
+      success: false,
+      verified: false,
+      error: "Task not found"
+    };
+  }
+
+  if (
+    String(task.status)
+      .toLowerCase() !==
+    "active"
+  ) {
+    return {
+      success: false,
+      verified: false,
+      error: "Task is not active"
+    };
+  }
+
+  if (
+    String(
+      task.verification_type
+    ).toLowerCase() !==
+    "telegram_join"
+  ) {
+    return {
+      success: false,
+      verified: false,
+      error:
+        "This task is not a Telegram join task"
+    };
+  }
+
+  const chatTarget =
+    extractTelegramChatTarget(
+      task.verification_target ||
+      task.link
+    );
+
+  if (!chatTarget) {
+    return {
+      success: false,
+      verified: false,
+      error:
+        "Telegram channel link is invalid"
+    };
+  }
+
+  const alreadyCompleted =
+    await taskAlreadyCompleted(
+      userId,
+      taskId
+    );
+
+  if (alreadyCompleted) {
+    return {
+      success: true,
+      verified: true,
+      already_completed: true,
+      task_id: task.task_id,
+      reward:
+        Number(task.reward || 0),
+      channel: chatTarget,
+      message:
+        "This task has already been completed."
+    };
+  }
+
+  const isMember =
+    await telegramCheckMembership(
+      chatTarget,
+      userId
+    );
+
+  if (!isMember) {
+    return {
+      success: true,
+      verified: false,
+      task_id: task.task_id,
+      reward:
+        Number(task.reward || 0),
+      channel: chatTarget,
+      message:
+        "আপনি এখনো Telegram channel-এ join করেননি। আগে channel-এ join করুন, তারপর আবার Verify করুন।"
+    };
+  }
+
+  const completion =
+    await saveTaskCompletion(
+      userId,
+      taskId,
+      Number(task.reward || 0),
+      "telegram_join"
+    );
+
+  return {
+    success: true,
+    verified: true,
+    newly_completed:
+      !!completion,
+    task_id: task.task_id,
+    reward:
+      Number(task.reward || 0),
+    channel: chatTarget,
+    message:
+      "Telegram membership verified successfully"
+  };
+}
+
+/* =========================
+   REQUEST BODY
+========================= */
+
+function readBody(req) {
+  return new Promise(
+    (resolve, reject) => {
       let body = "";
 
       req.on(
         "data",
         (chunk) => {
-
           body += chunk;
 
           if (
-            body.length > 20000
+            body.length >
+            2 * 1024 * 1024
           ) {
-
             reject(
               new Error(
                 "Request body too large"
@@ -457,30 +824,27 @@ async function readBody(req) {
         }
       );
 
-
       req.on(
         "end",
         () => {
+          if (!body) {
+            resolve({});
+            return;
+          }
 
           try {
-
             resolve(
-              body
-                ? JSON.parse(body)
-                : {}
+              JSON.parse(body)
             );
-
           } catch (error) {
-
             reject(
               new Error(
-                "Invalid JSON"
+                "Invalid JSON body"
               )
             );
           }
         }
       );
-
 
       req.on(
         "error",
@@ -490,1043 +854,177 @@ async function readBody(req) {
   );
 }
 
+/* =========================
+   JSON RESPONSE
+========================= */
 
-/* =========================================================
-   RESPONSE
-========================================================= */
-
-function send(
+function sendJson(
   res,
-  status,
-  data,
-  type = "application/json"
+  statusCode,
+  data
 ) {
-
   res.writeHead(
-    status,
+    statusCode,
     {
       "Content-Type":
-        type
+        "application/json; charset=utf-8",
+      "Access-Control-Allow-Origin":
+        "*",
+      "Access-Control-Allow-Methods":
+        "GET,POST,PUT,DELETE,OPTIONS",
+      "Access-Control-Allow-Headers":
+        "Content-Type, x-api-secret"
     }
   );
 
-
-  if (
-    type.includes("json")
-  ) {
-
-    return res.end(
-      JSON.stringify(data)
-    );
-  }
-
-
-  return res.end(
-    data
+  res.end(
+    JSON.stringify(data)
   );
 }
 
-
-/* =========================================================
-   YOUTUBE CONFIG
-========================================================= */
-
-function youtubeConfigured() {
-
-  return !!(
-    YOUTUBE_CLIENT_ID &&
-    YOUTUBE_CLIENT_SECRET &&
-    YOUTUBE_REDIRECT_URI
-  );
-}
-
-
-function youtubeClient() {
-
-  if (
-    !youtubeConfigured()
-  ) {
-
-    throw new Error(
-      "YouTube OAuth variables are not fully configured"
-    );
-  }
-
-
-  return new google.auth.OAuth2(
-    YOUTUBE_CLIENT_ID,
-    YOUTUBE_CLIENT_SECRET,
-    YOUTUBE_REDIRECT_URI
-  );
-}
-
-
-/* =========================================================
-   YOUTUBE CHANNEL TARGET
-========================================================= */
-
-function extractYoutubeTarget(value) {
-
-  let text =
-    String(
-      value || ""
-    ).trim();
-
-
-  if (!text) {
-
-    return {
-      type: "",
-      value: ""
-    };
-  }
-
-
-  if (
-    /^UC[a-zA-Z0-9_-]{20,}$/.test(
-      text
-    )
-  ) {
-
-    return {
-      type: "channelId",
-      value: text
-    };
-  }
-
-
-  const channelMatch =
-    text.match(
-      /youtube\.com\/channel\/(UC[a-zA-Z0-9_-]+)/i
-    );
-
-  if (
-    channelMatch
-  ) {
-
-    return {
-      type: "channelId",
-      value: channelMatch[1]
-    };
-  }
-
-
-  const handleMatch =
-    text.match(
-      /(?:youtube\.com\/)?@([a-zA-Z0-9._-]+)/i
-    );
-
-  if (
-    handleMatch
-  ) {
-
-    return {
-      type: "handle",
-      value:
-        "@" +
-        handleMatch[1]
-    };
-  }
-
-
-  return {
-    type: "",
-    value: ""
-  };
-}
-
-
-/* =========================================================
-   RESOLVE YOUTUBE CHANNEL ID
-========================================================= */
-
-async function resolveYoutubeChannelId(
-  oauth,
-  target
-) {
-
-  const parsed =
-    extractYoutubeTarget(
-      target
-    );
-
-
-  if (
-    !parsed.type
-  ) {
-
-    throw new Error(
-      "Invalid YouTube verification target. Use a YouTube channel ID, channel URL, or @handle."
-    );
-  }
-
-
-  if (
-    parsed.type === "channelId"
-  ) {
-
-    return parsed.value;
-  }
-
-
-  if (
-    parsed.type === "handle"
-  ) {
-
-    const youtube =
-      google.youtube({
-        version: "v3",
-        auth: oauth
-      });
-
-
-    const response =
-      await youtube.channels.list({
-
-        part: [
-          "id"
-        ],
-
-        forHandle:
-          parsed.value,
-
-        maxResults:
-          1
-      });
-
-
-    const items =
-      response.data.items || [];
-
-
-    if (
-      !items.length ||
-      !items[0].id
-    ) {
-
-      throw new Error(
-        "YouTube channel could not be found for " +
-        parsed.value
-      );
-    }
-
-
-    return items[0].id;
-  }
-
-
-  throw new Error(
-    "Could not resolve YouTube channel"
-  );
-}
-
-
-/* =========================================================
-   YOUTUBE VERIFY SUBSCRIPTION
-========================================================= */
-
-async function youtubeVerify(
-  oauth,
-  target
-) {
-
-  const targetChannelId =
-    await resolveYoutubeChannelId(
-      oauth,
-      target
-    );
-
-
-  const youtube =
-    google.youtube({
-      version: "v3",
-      auth: oauth
-    });
-
-
-  const response =
-    await youtube.subscriptions.list({
-
-      part: [
-        "snippet"
-      ],
-
-      mine:
-        true,
-
-      forChannelId:
-        targetChannelId,
-
-      maxResults:
-        1
-    });
-
-
-  const items =
-    response.data.items || [];
-
-
-  return {
-
-    verified:
-      items.length > 0,
-
-    channelId:
-      targetChannelId
-  };
-}
-
-
-/* =========================================================
-   SAVE YOUTUBE TOKEN
-========================================================= */
-
-async function saveYoutubeToken(
-  userId,
-  tokens
-) {
-
-  let refreshToken =
-    tokens.refresh_token ||
-    "";
-
-
-  if (
-    !refreshToken
-  ) {
-
-    const old =
-      await db.query(
-        `
-        SELECT refresh_token
-        FROM youtube_accounts
-
-        WHERE user_id = $1
-        `,
-        [
-          String(userId)
-        ]
-      );
-
-
-    if (
-      old.rows[0]
-    ) {
-
-      refreshToken =
-        old.rows[0].refresh_token;
-    }
-  }
-
-
-  if (
-    !refreshToken
-  ) {
-
-    throw new Error(
-      "No refresh token received from YouTube"
-    );
-  }
-
-
-  await db.query(
-    `
-    INSERT INTO youtube_accounts
-    (
-      user_id,
-      refresh_token,
-      access_token,
-      expiry_date,
-      updated_at
-    )
-
-    VALUES
-    (
-      $1,
-      $2,
-      $3,
-      $4,
-      NOW()
-    )
-
-    ON CONFLICT(user_id)
-
-    DO UPDATE SET
-      refresh_token = $2,
-      access_token = $3,
-      expiry_date = $4,
-      updated_at = NOW()
-    `,
-    [
-      String(userId),
-
-      refreshToken,
-
-      tokens.access_token ||
-        "",
-
-      tokens.expiry_date ||
-        0
-    ]
-  );
-}
-
-
-/* =========================================================
-   GET YOUTUBE OAUTH FOR USER
-========================================================= */
-
-async function getYoutubeOAuthForUser(
-  userId
-) {
-
-  const result =
-    await db.query(
-      `
-      SELECT *
-      FROM youtube_accounts
-
-      WHERE user_id = $1
-
-      LIMIT 1
-      `,
-      [
-        String(userId)
-      ]
-    );
-
-
-  if (
-    !result.rows[0]
-  ) {
-
-    return null;
-  }
-
-
-  const row =
-    result.rows[0];
-
-
-  const client =
-    youtubeClient();
-
-
-  client.setCredentials({
-
-    refresh_token:
-      row.refresh_token,
-
-    access_token:
-      row.access_token ||
-      undefined,
-
-    expiry_date:
-      Number(
-        row.expiry_date
-      ) ||
-      undefined
-  });
-
-
-  return client;
-}
-
-
-/* =========================================================
+/* =========================
    RPC REQUEST
-========================================================= */
+========================= */
 
 function rpcRequest(
   method,
-  params,
-  callback
+  params
 ) {
-
-  const body =
-    JSON.stringify({
-
-      jsonrpc:
-        "2.0",
-
-      id:
-        1,
-
-      method:
-        method,
-
-      params:
-        params
-    });
-
-
-  const url =
-    new URL(
-      RPC_URL
-    );
-
-
-  const req =
-    https.request(
-      {
-
-        hostname:
-          url.hostname,
-
-        path:
-          url.pathname,
-
-        method:
-          "POST",
-
-        headers: {
-
-          "Content-Type":
-            "application/json",
-
-          "Content-Length":
-            Buffer.byteLength(
-              body
-            )
-        }
-      },
-
-
-      (res) => {
-
-        let data = "";
-
-
-        res.on(
-          "data",
-          (chunk) => {
-
-            data += chunk;
-          }
-        );
-
-
-        res.on(
-          "end",
-          () => {
-
-            try {
-
-              const json =
-                JSON.parse(
-                  data
-                );
-
-
-              if (
-                json.error
-              ) {
-
-                return callback({
-
-                  error:
-                    json.error.message ||
-                    "RPC error"
-                });
-              }
-
-
-              callback(
-                null,
-                json.result
-              );
-
-            } catch (error) {
-
-              callback({
-
-                error:
-                  "Invalid RPC response"
-              });
-            }
-          }
-        );
-      }
-    );
-
-
-  req.on(
-    "error",
-    () => {
-
-      callback({
-
-        error:
-          "BSC RPC connection failed"
-      });
-    }
-  );
-
-
-  req.write(body);
-  req.end();
-}
-
-
-/* =========================================================
-   PAYMENT VERIFICATION
-========================================================= */
-
-function verifyPayment(
-  txHash,
-  callback
-) {
-
-  if (
-    !/^0x[a-fA-F0-9]{64}$/.test(
-      txHash
-    )
-  ) {
-
-    return callback({
-
-      verified:
-        false,
-
-      error:
-        "Invalid TXID"
-    });
-  }
-
-
-  rpcRequest(
-    "eth_getTransactionByHash",
-    [txHash],
-
-    (error, tx) => {
-
-      if (
-        error
-      ) {
-
-        return callback({
-
-          verified:
-            false,
-
-          error:
-            error.error ||
-            "RPC error"
+  return new Promise(
+    (resolve, reject) => {
+      const data =
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: Date.now(),
+          method,
+          params
         });
-      }
 
+      const url =
+        new URL(RPC_URL);
 
-      if (!tx) {
-
-        return callback({
-
-          verified:
-            false,
-
-          reason:
-            "Transaction not found"
-        });
-      }
-
-
-      if (
-        String(
-          tx.to || ""
-        ).toLowerCase() !==
-        USDT_CONTRACT
-      ) {
-
-        return callback({
-
-          verified:
-            false,
-
-          reason:
-            "Transaction is not a USDT contract transaction"
-        });
-      }
-
-
-      rpcRequest(
-        "eth_getTransactionReceipt",
-        [txHash],
-
-        (
-          receiptError,
-          receipt
-        ) => {
-
-          if (
-            receiptError
-          ) {
-
-            return callback({
-
-              verified:
-                false,
-
-              error:
-                receiptError.error ||
-                "Could not get transaction receipt"
-            });
-          }
-
-
-          if (
-            !receipt
-          ) {
-
-            return callback({
-
-              verified:
-                false,
-
-              reason:
-                "Transaction is still pending",
-
-              confirmations:
-                0
-            });
-          }
-
-
-          if (
-            String(
-              receipt.status
-            ).toLowerCase() !==
-            "0x1"
-          ) {
-
-            return callback({
-
-              verified:
-                false,
-
-              reason:
-                "Transaction failed"
-            });
-          }
-
-
-          let payment =
-            null;
-
-
-          for (
-            const log of
-            (
-              receipt.logs ||
-              []
-            )
-          ) {
-
-            if (
-              String(
-                log.address || ""
-              ).toLowerCase() !==
-              USDT_CONTRACT
-            ) {
-
-              continue;
+      const request =
+        https.request(
+          {
+            hostname:
+              url.hostname,
+            port:
+              url.port || 443,
+            path:
+              url.pathname +
+              (url.search || ""),
+            method: "POST",
+            headers: {
+              "Content-Type":
+                "application/json",
+              "Content-Length":
+                Buffer.byteLength(data)
             }
+          },
+          (response) => {
+            let body = "";
 
-
-            if (
-              !log.topics ||
-              log.topics.length < 3
-            ) {
-
-              continue;
-            }
-
-
-            if (
-              String(
-                log.topics[0]
-              ).toLowerCase() !==
-              TRANSFER_TOPIC
-            ) {
-
-              continue;
-            }
-
-
-            const from =
-              "0x" +
-              String(
-                log.topics[1]
-              )
-                .slice(-40)
-                .toLowerCase();
-
-
-            const to =
-              "0x" +
-              String(
-                log.topics[2]
-              )
-                .slice(-40)
-                .toLowerCase();
-
-
-            if (
-              to !==
-              PAYMENT_WALLET
-            ) {
-
-              continue;
-            }
-
-
-            try {
-
-              const raw =
-                BigInt(
-                  String(
-                    log.data ||
-                    "0x0"
-                  )
-                );
-
-
-              const amount =
-                Number(raw) /
-                1e18;
-
-
-              if (
-                Number.isFinite(
-                  amount
-                ) &&
-                amount > 0
-              ) {
-
-                payment = {
-
-                  from:
-                    from,
-
-                  to:
-                    to,
-
-                  amount:
-                    amount,
-
-                  rawValue:
-                    raw.toString(),
-
-                  blockNumber:
-                    receipt.blockNumber
-                };
-
-
-                break;
+            response.on(
+              "data",
+              (chunk) => {
+                body += chunk;
               }
+            );
 
-            } catch (error) {}
-          }
+            response.on(
+              "end",
+              () => {
+                try {
+                  const parsed =
+                    JSON.parse(body);
 
+                  if (
+                    parsed.error
+                  ) {
+                    reject(
+                      new Error(
+                        parsed.error.message ||
+                        "RPC error"
+                      )
+                    );
+                    return;
+                  }
 
-          if (
-            !payment
-          ) {
-
-            return callback({
-
-              verified:
-                false,
-
-              reason:
-                "No BEP-20 USDT Transfer to the payment wallet was found"
-            });
-          }
-
-
-          rpcRequest(
-            "eth_blockNumber",
-            [],
-
-            (
-              blockError,
-              latestBlock
-            ) => {
-
-              if (
-                blockError
-              ) {
-
-                return callback({
-
-                  verified:
-                    false,
-
-                  error:
-                    blockError.error ||
-                    "Could not get latest BSC block"
-                });
-              }
-
-
-              let confirmations =
-                0;
-
-
-              try {
-
-                confirmations =
-                  Number(
-                    BigInt(
-                      latestBlock
-                    ) -
-                    BigInt(
-                      receipt.blockNumber
-                    ) +
-                    1n
+                  resolve(
+                    parsed.result
                   );
-
-              } catch (error) {
-
-                confirmations =
-                  0;
+                } catch (error) {
+                  reject(
+                    new Error(
+                      "Invalid RPC response"
+                    )
+                  );
+                }
               }
+            );
+          }
+        );
 
-
-              if (
-                confirmations < 3
-              ) {
-
-                return callback({
-
-                  verified:
-                    false,
-
-                  reason:
-                    "Transaction confirmation কম",
-
-                  confirmations:
-                    confirmations,
-
-                  required:
-                    3,
-
-                  txHash:
-                    txHash
-                });
-              }
-
-
-              callback({
-
-                verified:
-                  true,
-
-                txHash:
-                  txHash,
-
-                amount:
-                  payment.amount,
-
-                rawValue:
-                  payment.rawValue,
-
-                from:
-                  payment.from,
-
-                to:
-                  payment.to,
-
-                blockNumber:
-                  payment.blockNumber,
-
-                confirmations:
-                  confirmations,
-
-                requiredConfirmations:
-                  3
-              });
-            }
-          );
-        }
+      request.on(
+        "error",
+        reject
       );
+
+      request.write(data);
+      request.end();
     }
   );
 }
-
-
-/* =========================================================
-   PAYOUT
-========================================================= */
+/* =========================
+   AUTOMATIC USDT PAYOUT
+========================= */
 
 async function sendPayout(
   walletAddress,
   amount,
   clientOid
 ) {
-
-  if (
-    !PAYOUT_PRIVATE_KEY
-  ) {
-
+  if (!PAYOUT_PRIVATE_KEY) {
     throw new Error(
       "PAYOUT_PRIVATE_KEY is missing"
     );
   }
 
-
-  if (
-    !PAYOUT_WALLET
-  ) {
-
+  if (!PAYOUT_WALLET) {
     throw new Error(
       "PAYOUT_WALLET is missing"
     );
   }
 
-
-  if (
-    !PAYOUT_API_SECRET
-  ) {
-
+  if (!PAYOUT_API_SECRET) {
     throw new Error(
       "PAYOUT_API_SECRET is missing"
     );
   }
-
 
   if (
     !/^0x[a-fA-F0-9]{40}$/.test(
       walletAddress
     )
   ) {
-
     throw new Error(
       "Invalid payout wallet address"
     );
   }
 
-
   const payoutAmount =
     Number(amount);
 
-
   if (
-    !Number.isFinite(
-      payoutAmount
-    ) ||
+    !Number.isFinite(payoutAmount) ||
     payoutAmount <= 0
   ) {
-
     throw new Error(
       "Invalid payout amount"
     );
   }
 
-
-  if (
-    payoutAmount <
-    MIN_WITHDRAW
-  ) {
-
+  if (payoutAmount < MIN_WITHDRAW) {
     throw new Error(
       "Minimum payout is " +
       MIN_WITHDRAW +
@@ -1534,17 +1032,14 @@ async function sendPayout(
     );
   }
 
-
   if (
     !clientOid ||
     String(clientOid).length < 5
   ) {
-
     throw new Error(
       "Invalid clientOid"
     );
   }
-
 
   const provider =
     new ethers.JsonRpcProvider(
@@ -1552,45 +1047,37 @@ async function sendPayout(
       56
     );
 
-
   const signer =
     new ethers.Wallet(
       PAYOUT_PRIVATE_KEY,
       provider
     );
 
-
   const signerAddress =
     (
       await signer.getAddress()
     ).toLowerCase();
 
-
   if (
     signerAddress !==
     PAYOUT_WALLET
   ) {
-
     throw new Error(
       "PAYOUT_PRIVATE_KEY does not match PAYOUT_WALLET"
     );
   }
 
+  const usdtAbi = [
+    "function transfer(address to, uint256 amount) returns (bool)",
+    "function balanceOf(address account) view returns (uint256)"
+  ];
 
   const usdt =
     new ethers.Contract(
-
       USDT_CONTRACT,
-
-      [
-        "function transfer(address to,uint256 amount) returns (bool)",
-
-        "function balanceOf(address account) view returns (uint256)"
-      ],
-
+      usdtAbi,
       signer
     );
-
 
   const rawAmount =
     ethers.parseUnits(
@@ -1598,23 +1085,16 @@ async function sendPayout(
       18
     );
 
-
   const usdtBalance =
     await usdt.balanceOf(
       signerAddress
     );
 
-
-  if (
-    usdtBalance <
-    rawAmount
-  ) {
-
+  if (usdtBalance < rawAmount) {
     throw new Error(
       "Payout wallet has insufficient USDT balance"
     );
   }
-
 
   const tx =
     await usdt.transfer(
@@ -1622,1503 +1102,1055 @@ async function sendPayout(
       rawAmount
     );
 
-
   const receipt =
     await tx.wait();
-
 
   if (
     !receipt ||
     receipt.status !== 1
   ) {
-
     throw new Error(
       "Payout transaction failed"
     );
   }
 
-
   return {
-
-    success:
-      true,
-
-    txHash:
-      tx.hash,
-
+    success: true,
+    txHash: tx.hash,
     clientOid:
       String(clientOid),
-
-    from:
-      signerAddress,
-
-    to:
-      walletAddress,
-
-    amount:
-      payoutAmount,
-
-    network:
-      "BEP-20 / BSC"
+    from: signerAddress,
+    to: walletAddress,
+    amount: payoutAmount,
+    network: "BEP-20 / BSC"
   };
 }
 
+/* =========================
+   READ REQUEST BODY
+========================= */
 
-/* =========================================================
-   YOUTUBE OAUTH STATE
-========================================================= */
+function readBody(req) {
+  return new Promise(
+    (resolve, reject) => {
+      let body = "";
 
-function createOAuthState(
-  userId
-) {
+      req.on(
+        "data",
+        (chunk) => {
+          body += chunk;
 
-  const state =
-    crypto
-      .randomBytes(32)
-      .toString("hex");
+          if (body.length > 10000) {
+            reject(
+              new Error(
+                "Request body too large"
+              )
+            );
 
+            req.destroy();
+          }
+        }
+      );
 
-  return db.query(
-    `
-    INSERT INTO youtube_oauth_states
-    (
-      state,
-      user_id,
-      expires_at
-    )
+      req.on(
+        "end",
+        () => {
+          try {
+            resolve(
+              body
+                ? JSON.parse(body)
+                : {}
+            );
+          } catch (e) {
+            reject(
+              new Error(
+                "Invalid JSON"
+              )
+            );
+          }
+        }
+      );
 
-    VALUES
-    (
-      $1,
-      $2,
-      NOW() + INTERVAL '10 minutes'
-    )
-    `,
-    [
-      state,
-      String(userId)
-    ]
-  ).then(
-    () => state
+      req.on(
+        "error",
+        reject
+      );
+    }
   );
 }
 
-
-/* =========================================================
-   CLEAN OAUTH STATES
-========================================================= */
-
-async function cleanOAuthStates() {
-
-  await db.query(`
-    DELETE FROM youtube_oauth_states
-    WHERE expires_at < NOW()
-  `);
-}
-
-
-/* =========================================================
-   YOUTUBE AUTH URL
-========================================================= */
-
-async function getYoutubeAuthUrl(
-  userId
-) {
-
-  if (
-    !youtubeConfigured()
-  ) {
-
-    throw new Error(
-      "YouTube OAuth is not configured"
-    );
-  }
-
-
-  await cleanOAuthStates();
-
-
-  const state =
-    await createOAuthState(
-      userId
-    );
-
-
-  const oauth =
-    youtubeClient();
-
-
-  return oauth.generateAuthUrl({
-
-    access_type:
-      "offline",
-
-    prompt:
-      "consent",
-
-    scope:
-      YOUTUBE_SCOPES,
-
-    state:
-      state
-  });
-}
-
-
-/* =========================================================
-   OAUTH STATE CHECK
-========================================================= */
-
-async function getOAuthState(
-  state
-) {
-
-  const result =
-    await db.query(
-      `
-      SELECT
-        state,
-        user_id
-
-      FROM youtube_oauth_states
-
-      WHERE state = $1
-
-      AND expires_at > NOW()
-
-      LIMIT 1
-      `,
-      [
-        String(state)
-      ]
-    );
-
-
-  return result.rows[0] || null;
-}
-
-
-/* =========================================================
-   DELETE OAUTH STATE
-========================================================= */
-
-async function deleteOAuthState(
-  state
-) {
-
-  await db.query(
-    `
-    DELETE FROM youtube_oauth_states
-    WHERE state = $1
-    `,
-    [
-      String(state)
-    ]
-  );
-}
-
-
-/* =========================================================
-   TASK COMPLETION CHECK
-========================================================= */
-
-async function taskAlreadyCompleted(
-  userId,
-  taskId
-) {
-
-  const result =
-    await db.query(
-      `
-      SELECT id
-
-      FROM task_completions
-
-      WHERE user_id = $1
-
-      AND task_id = $2
-
-      LIMIT 1
-      `,
-      [
-        String(userId),
-        Number(taskId)
-      ]
-    );
-
-
-  return (
-    result.rows.length > 0
-  );
-}
-
-
-/* =========================================================
-   SAVE TASK COMPLETION
-========================================================= */
-
-async function saveTaskCompletion(
-  userId,
-  taskId,
-  reward,
-  verificationType
-) {
-
-  const result =
-    await db.query(
-      `
-      INSERT INTO task_completions
-      (
-        user_id,
-        task_id,
-        reward,
-        verification_type
-      )
-
-      VALUES
-      (
-        $1,
-        $2,
-        $3,
-        $4
-      )
-
-      ON CONFLICT
-      (
-        user_id,
-        task_id
-      )
-
-      DO NOTHING
-
-      RETURNING *
-      `,
-      [
-        String(userId),
-
-        Number(taskId),
-
-        Number(
-          reward || 0
-        ),
-
-        String(
-          verificationType ||
-          "manual"
-        )
-      ]
-    );
-
-
-  return result.rows[0] || null;
-}
-
-
-/* =========================================================
-   YOUTUBE VERIFY TASK
-========================================================= */
-
-async function verifyYoutubeTask(
-  userId,
-  taskId
-) {
-
-  const task =
-    await getTask(
-      taskId
-    );
-
-
-  if (!task) {
-
-    return {
-
-      success:
-        false,
-
-      verified:
-        false,
-
-      error:
-        "Task not found"
-    };
-  }
-
-
-  if (
-    String(
-      task.status
-    ).toLowerCase() !==
-    "active"
-  ) {
-
-    return {
-
-      success:
-        false,
-
-      verified:
-        false,
-
-      error:
-        "Task is not active"
-    };
-  }
-
-
-  const type =
-    String(
-      task.verification_type ||
-      "manual"
-    ).toLowerCase();
-
-
-  if (
-    type !==
-      "youtube_subscribe" &&
-    type !==
-      "youtube"
-  ) {
-
-    return {
-
-      success:
-        false,
-
-      verified:
-        false,
-
-      error:
-        "This task is not a YouTube Subscribe task"
-    };
-  }
-
-
-  const already =
-    await taskAlreadyCompleted(
-      userId,
-      task.task_id
-    );
-
-
-  if (already) {
-
-    return {
-
-      success:
-        true,
-
-      verified:
-        true,
-
-      alreadyCompleted:
-        true,
-
-      taskId:
-        task.task_id,
-
-      reward:
-        Number(
-          task.reward || 0
-        )
-    };
-  }
-
-
-  const oauth =
-    await getYoutubeOAuthForUser(
-      userId
-    );
-
-
-  if (!oauth) {
-
-    return {
-
-      success:
-        false,
-
-      verified:
-        false,
-
-      connected:
-        false,
-
-      error:
-        "YouTube account is not connected"
-    };
-  }
-
-
-  const target =
-    String(
-      task.verification_target ||
-      task.link ||
-      ""
-    ).trim();
-
-
-  if (!target) {
-
-    return {
-
-      success:
-        false,
-
-      verified:
-        false,
-
-      connected:
-        true,
-
-      error:
-        "YouTube verification target is missing"
-    };
-  }
-
-
-  const check =
-    await youtubeVerify(
-      oauth,
-      target
-    );
-
-
-  if (
-    !check.verified
-  ) {
-
-    return {
-
-      success:
-        true,
-
-      verified:
-        false,
-
-      connected:
-        true,
-
-      taskId:
-        task.task_id,
-
-      reward:
-        Number(
-          task.reward || 0
-        ),
-
-      channelId:
-        check.channelId,
-
-      message:
-        "YouTube channel subscription not found"
-    };
-  }
-
-
-  const completion =
-    await saveTaskCompletion(
-
-      userId,
-
-      task.task_id,
-
-      Number(
-        task.reward || 0
-      ),
-
-      type
-    );
-
-
-  if (!completion) {
-
-    return {
-
-      success:
-        true,
-
-      verified:
-        true,
-
-      alreadyCompleted:
-        true,
-
-      taskId:
-        task.task_id,
-
-      reward:
-        Number(
-          task.reward || 0
-        )
-    };
-  }
-
-
-  return {
-
-    success:
-      true,
-
-    verified:
-      true,
-
-    alreadyCompleted:
-      false,
-
-    taskId:
-      task.task_id,
-
-    reward:
-      Number(
-        task.reward || 0
-      ),
-
-    channelId:
-      check.channelId
-  };
-}
-
-
-/* =========================================================
+/* =========================
    HTTP SERVER
-========================================================= */
+========================= */
 
 const server =
   http.createServer(
     async (req, res) => {
 
-      let parsed;
-
-
-      try {
-
-        parsed =
-          new URL(
-            req.url,
-            `http://${req.headers.host}`
-          );
-
-      } catch (error) {
-
-        return send(
-          res,
-          400,
-          {
-
-            success:
-              false,
-
-            error:
-              "Invalid URL"
-          }
+      const parsed =
+        new URL(
+          req.url,
+          `http://${req.headers.host}`
         );
-      }
 
-
-      /* =====================================================
+      /* =========================
          HOME
-      ===================================================== */
+      ========================= */
 
       if (
         req.method === "GET" &&
         parsed.pathname === "/"
       ) {
-
-        return send(
-
-          res,
-
-          200,
-
-          "Telegram Bot Backend is running!",
-
-          "text/plain"
-        );
-      }
-
-
-      /* =====================================================
-         HEALTH
-      ===================================================== */
-
-      if (
-        req.method === "GET" &&
-        parsed.pathname === "/health"
-      ) {
-
-        return send(
-          res,
+        res.writeHead(
           200,
           {
-
-            success:
-              true,
-
-            status:
-              "ok"
+            "Content-Type":
+              "text/plain"
           }
+        );
+
+        return res.end(
+          "Telegram Bot Backend is running!"
         );
       }
 
-
-      /* =====================================================
-         GET TASKS
-      ===================================================== */
+      /* =========================
+         DATABASE TASK LIST
+      ========================= */
 
       if (
         req.method === "GET" &&
         parsed.pathname === "/tasks"
       ) {
-
         try {
-
           const tasks =
             await getTasks();
 
-
-          return send(
-            res,
+          res.writeHead(
             200,
             {
-
-              success:
-                true,
-
-              tasks:
-                tasks
+              "Content-Type":
+                "application/json"
             }
           );
 
+          return res.end(
+            JSON.stringify({
+              success: true,
+              tasks
+            })
+          );
         } catch (error) {
-
           console.error(
             "Get tasks error:",
             error.message
           );
 
-
-          return send(
-            res,
+          res.writeHead(
             500,
             {
+              "Content-Type":
+                "application/json"
+            }
+          );
 
-              success:
-                false,
-
+          return res.end(
+            JSON.stringify({
+              success: false,
               error:
                 error.message
-            }
+            })
           );
         }
       }
 
-
-      /* =====================================================
+      /* =========================
          GET SINGLE TASK
-      ===================================================== */
+      ========================= */
 
       if (
         req.method === "GET" &&
         parsed.pathname === "/task"
       ) {
-
         const taskId =
           parsed.searchParams.get(
             "task_id"
           );
 
-
         if (!taskId) {
-
-          return send(
-            res,
+          res.writeHead(
             400,
             {
+              "Content-Type":
+                "application/json"
+            }
+          );
 
-              success:
-                false,
-
+          return res.end(
+            JSON.stringify({
+              success: false,
               error:
                 "task_id is required"
-            }
+            })
           );
         }
 
-
         try {
-
           const task =
-            await getTask(
-              taskId
-            );
+            await getTask(taskId);
 
-
-          return send(
-            res,
+          res.writeHead(
             200,
             {
-
-              success:
-                true,
-
-              task:
-                task
+              "Content-Type":
+                "application/json"
             }
           );
 
+          return res.end(
+            JSON.stringify({
+              success: true,
+              task
+            })
+          );
         } catch (error) {
-
-          return send(
-            res,
+          res.writeHead(
             500,
             {
+              "Content-Type":
+                "application/json"
+            }
+          );
 
-              success:
-                false,
-
+          return res.end(
+            JSON.stringify({
+              success: false,
               error:
                 error.message
-            }
+            })
           );
         }
       }
 
-
-      /* =====================================================
+      /* =========================
          ADD TASK
-      ===================================================== */
+      ========================= */
 
       if (
         req.method === "POST" &&
         parsed.pathname === "/task"
       ) {
-
         try {
-
           const body =
             await readBody(req);
 
-
           const taskId =
-            Number(
-              body.task_id
-            );
-
-
-          if (
-            !Number.isInteger(
-              taskId
-            ) ||
-            taskId <= 0
-          ) {
-
-            throw new Error(
-              "Valid task_id is required"
-            );
-          }
-
+            Number(body.task_id);
 
           const title =
             String(
               body.title || ""
             ).trim();
 
+          const description =
+            String(
+              body.description || ""
+            ).trim();
+
+          const link =
+            String(
+              body.link || ""
+            ).trim();
+
+          const reward =
+            Number(body.reward);
+
+          const status =
+            String(
+              body.status ||
+              "active"
+            ).trim();
+
+          const verificationType =
+            String(
+              body.verification_type ||
+              "manual"
+            ).trim();
+
+          const verificationTarget =
+            String(
+              body.verification_target ||
+              ""
+            ).trim();
+
+          if (
+            !Number.isInteger(taskId) ||
+            taskId <= 0
+          ) {
+            throw new Error(
+              "Valid task_id is required"
+            );
+          }
 
           if (!title) {
-
             throw new Error(
               "Task title is required"
             );
           }
 
-
-          const reward =
-            Number(
-              body.reward
-            );
-
-
           if (
-            !Number.isFinite(
-              reward
-            ) ||
+            !Number.isFinite(reward) ||
             reward < 0
           ) {
-
             throw new Error(
               "Valid reward is required"
             );
           }
 
-
           const existing =
-            await getTask(
-              taskId
-            );
-
+            await getTask(taskId);
 
           if (existing) {
-
-            return send(
-              res,
+            res.writeHead(
               409,
               {
+                "Content-Type":
+                  "application/json"
+              }
+            );
 
-                success:
-                  false,
-
+            return res.end(
+              JSON.stringify({
+                success: false,
                 error:
                   "Task ID already exists"
-              }
+              })
             );
           }
 
-
           const task =
             await addTask(
-              body
+              taskId,
+              title,
+              description,
+              link,
+              reward,
+              status,
+              verificationType,
+              verificationTarget
             );
 
-
-          return send(
-            res,
+          res.writeHead(
             201,
             {
+              "Content-Type":
+                "application/json"
+              }
+            );
 
-              success:
-                true,
-
-              task:
-                task
-            }
+          return res.end(
+            JSON.stringify({
+              success: true,
+              task
+            })
           );
-
         } catch (error) {
-
           console.error(
             "Add task error:",
             error.message
           );
 
-
-          return send(
-            res,
+          res.writeHead(
             400,
             {
+              "Content-Type":
+                "application/json"
+            }
+          );
 
-              success:
-                false,
-
+          return res.end(
+            JSON.stringify({
+              success: false,
               error:
                 error.message
-            }
+            })
           );
         }
       }
 
-
-      /* =====================================================
+      /* =========================
          UPDATE TASK
-      ===================================================== */
+      ========================= */
 
       if (
         req.method === "PUT" &&
         parsed.pathname === "/task"
       ) {
-
         try {
-
           const body =
             await readBody(req);
 
-
           const taskId =
-            Number(
-              body.task_id
-            );
-
-
-          if (
-            !Number.isInteger(
-              taskId
-            ) ||
-            taskId <= 0
-          ) {
-
-            throw new Error(
-              "Valid task_id is required"
-            );
-          }
-
+            Number(body.task_id);
 
           const title =
             String(
               body.title || ""
             ).trim();
 
+          const description =
+            String(
+              body.description || ""
+            ).trim();
+
+          const link =
+            String(
+              body.link || ""
+            ).trim();
+
+          const reward =
+            Number(body.reward);
+
+          const status =
+            String(
+              body.status ||
+              "active"
+            ).trim();
+
+          const verificationType =
+            String(
+              body.verification_type ||
+              "manual"
+            ).trim();
+
+          const verificationTarget =
+            String(
+              body.verification_target ||
+              ""
+            ).trim();
+
+          if (
+            !Number.isInteger(taskId) ||
+            taskId <= 0
+          ) {
+            throw new Error(
+              "Valid task_id is required"
+            );
+          }
 
           if (!title) {
-
             throw new Error(
               "Task title is required"
             );
           }
 
-
-          const reward =
-            Number(
-              body.reward
-            );
-
-
           if (
-            !Number.isFinite(
-              reward
-            ) ||
+            !Number.isFinite(reward) ||
             reward < 0
           ) {
-
             throw new Error(
               "Valid reward is required"
             );
           }
 
-
           const task =
             await updateTask(
-              body
+              taskId,
+              title,
+              description,
+              link,
+              reward,
+              status,
+              verificationType,
+              verificationTarget
             );
 
-
           if (!task) {
-
-            return send(
-              res,
+            res.writeHead(
               404,
               {
+                "Content-Type":
+                  "application/json"
+              }
+            );
 
-                success:
-                  false,
-
+            return res.end(
+              JSON.stringify({
+                success: false,
                 error:
                   "Task not found"
-              }
+              })
             );
           }
 
-
-          return send(
-            res,
+          res.writeHead(
             200,
             {
-
-              success:
-                true,
-
-              task:
-                task
+              "Content-Type":
+                "application/json"
             }
           );
 
+          return res.end(
+            JSON.stringify({
+              success: true,
+              task
+            })
+          );
         } catch (error) {
-
-          return send(
-            res,
+          res.writeHead(
             400,
             {
+              "Content-Type":
+                "application/json"
+            }
+          );
 
-              success:
-                false,
-
+          return res.end(
+            JSON.stringify({
+              success: false,
               error:
                 error.message
-            }
+            })
           );
         }
       }
 
-
-      /* =====================================================
+      /* =========================
          DELETE TASK
-      ===================================================== */
+      ========================= */
 
       if (
         req.method === "DELETE" &&
         parsed.pathname === "/task"
       ) {
-
         const taskId =
           parsed.searchParams.get(
             "task_id"
           );
 
-
         if (!taskId) {
-
-          return send(
-            res,
+          res.writeHead(
             400,
             {
+              "Content-Type":
+                "application/json"
+              }
+            );
 
-              success:
-                false,
-
+          return res.end(
+            JSON.stringify({
+              success: false,
               error:
                 "task_id is required"
-            }
+            })
           );
         }
 
-
         try {
-
           const task =
             await deleteTask(
               taskId
             );
 
-
           if (!task) {
-
-            return send(
-              res,
+            res.writeHead(
               404,
               {
+                "Content-Type":
+                  "application/json"
+              }
+            );
 
-                success:
-                  false,
-
+            return res.end(
+              JSON.stringify({
+                success: false,
                 error:
                   "Task not found"
-              }
+              })
             );
           }
 
-
-          return send(
-            res,
+          res.writeHead(
             200,
             {
-
-              success:
-                true,
-
-              deleted:
-                task
+              "Content-Type":
+                "application/json"
             }
           );
 
+          return res.end(
+            JSON.stringify({
+              success: true,
+              deleted: task
+            })
+          );
         } catch (error) {
-
-          return send(
-            res,
+          res.writeHead(
             500,
             {
+              "Content-Type":
+                "application/json"
+              }
+            );
 
-              success:
-                false,
-
+          return res.end(
+            JSON.stringify({
+              success: false,
               error:
                 error.message
-            }
+            })
           );
         }
       }
 
-
-      /* =====================================================
-         YOUTUBE CONNECT
-         DIRECT GOOGLE REDIRECT
-===================================================== */
+      /* =========================
+         YOUTUBE OAUTH START
+         GET /youtube/auth
+         ?user_id=123
+      ========================= */
 
       if (
         req.method === "GET" &&
-        parsed.pathname ===
-          "/youtube/connect"
+        parsed.pathname === "/youtube/auth"
       ) {
-
-        const userId =
-          parsed.searchParams.get(
-            "user_id"
-          );
-
-
-        if (!userId) {
-
-          return send(
-            res,
-            400,
-            {
-
-              success:
-                false,
-
-              error:
-                "user_id is required"
-            }
-          );
-        }
-
-
         try {
-
-          const url =
-            await getYoutubeAuthUrl(
-              userId
+          if (!youtubeConfigured()) {
+            res.writeHead(
+              500,
+              {
+                "Content-Type":
+                  "application/json"
+              }
             );
 
+            return res.end(
+              JSON.stringify({
+                success: false,
+                error:
+                  "YouTube OAuth is not fully configured. Set YOUTUBE_REDIRECT_URI too."
+              })
+            );
+          }
 
-          /* =========================
-             DIRECT REDIRECT TO GOOGLE
-          ========================= */
+          const userId =
+            String(
+              parsed.searchParams.get(
+                "user_id"
+              ) || ""
+            ).trim();
+
+          if (!userId) {
+            res.writeHead(
+              400,
+              {
+                "Content-Type":
+                  "application/json"
+              }
+            );
+
+            return res.end(
+              JSON.stringify({
+                success: false,
+                error:
+                  "user_id is required"
+              })
+            );
+          }
+
+          const oauthClient =
+            createYoutubeOAuthClient();
+
+          const state =
+            Buffer.from(
+              JSON.stringify({
+                userId,
+                secret:
+                  YOUTUBE_OAUTH_SECRET,
+                createdAt:
+                  Date.now()
+              })
+            ).toString("base64url");
+
+          const authUrl =
+            oauthClient.generateAuthUrl({
+              access_type: "offline",
+              prompt: "consent",
+              scope:
+                YOUTUBE_SCOPES,
+              state
+            });
 
           res.writeHead(
             302,
             {
               Location:
-                url
+                authUrl
             }
           );
-
 
           return res.end();
 
         } catch (error) {
-
           console.error(
-            "YouTube connect error:",
+            "YouTube auth error:",
             error.message
           );
 
-
-          return send(
-            res,
+          res.writeHead(
             500,
             {
+              "Content-Type":
+                "application/json"
+            }
+          );
 
-              success:
-                false,
-
+          return res.end(
+            JSON.stringify({
+              success: false,
               error:
                 error.message
-            }
+            })
           );
         }
       }
 
-
-      /* =====================================================
-         YOUTUBE CALLBACK
-      ===================================================== */
+      /* =========================
+         YOUTUBE OAUTH CALLBACK
+         GET /youtube/callback
+      ========================= */
 
       if (
         req.method === "GET" &&
         parsed.pathname ===
           "/youtube/callback"
       ) {
-
-        const code =
-          parsed.searchParams.get(
-            "code"
-          );
-
-
-        const state =
-          parsed.searchParams.get(
-            "state"
-          );
-
-
-        if (
-          !code ||
-          !state
-        ) {
-
-          return send(
-            res,
-            400,
-            {
-
-              success:
-                false,
-
-              error:
-                "Missing OAuth code or state"
-            }
-          );
-        }
-
-
         try {
+          const code =
+            String(
+              parsed.searchParams.get(
+                "code"
+              ) || ""
+            ).trim();
 
-          const oauthState =
-            await getOAuthState(
-              state
-            );
+          const state =
+            String(
+              parsed.searchParams.get(
+                "state"
+              ) || ""
+            ).trim();
 
+          const oauthError =
+            String(
+              parsed.searchParams.get(
+                "error"
+              ) || ""
+            ).trim();
 
-          if (
-            !oauthState
-          ) {
-
-            return send(
-              res,
+          if (oauthError) {
+            res.writeHead(
               400,
               {
-
-                success:
-                  false,
-
-                error:
-                  "Invalid or expired OAuth state"
+                "Content-Type":
+                  "text/html; charset=utf-8"
               }
+            );
+
+            return res.end(
+              "<h2>YouTube authorization was cancelled.</h2><p>You can close this page and return to Telegram.</p>"
             );
           }
 
+          if (!code || !state) {
+            res.writeHead(
+              400,
+              {
+                "Content-Type":
+                  "text/html; charset=utf-8"
+              }
+            );
 
-          const oauth =
-            youtubeClient();
+            return res.end(
+              "<h2>Invalid YouTube authorization response.</h2>"
+            );
+          }
 
+          let stateData;
 
-          const tokenResult =
-            await oauth.getToken(
+          try {
+            stateData =
+              JSON.parse(
+                Buffer.from(
+                  state,
+                  "base64url"
+                ).toString(
+                  "utf8"
+                )
+              );
+          } catch (e) {
+            throw new Error(
+              "Invalid OAuth state"
+            );
+          }
+
+          if (
+            stateData.secret !==
+            YOUTUBE_OAUTH_SECRET
+          ) {
+            res.writeHead(
+              403,
+              {
+                "Content-Type":
+                  "text/html; charset=utf-8"
+              }
+            );
+
+            return res.end(
+              "<h2>Invalid OAuth state.</h2>"
+            );
+          }
+
+          const oauthClient =
+            createYoutubeOAuthClient();
+
+          const tokenResponse =
+            await oauthClient.getToken(
               code
             );
 
+          const tokens =
+            tokenResponse.tokens || {};
 
-          await saveYoutubeToken(
-            oauthState.user_id,
-            tokenResult.tokens
+                    if (!tokens.refresh_token) {
+            console.warn(
+              "No refresh token returned for YouTube user:",
+              stateData.userId
+            );
+                    }          const userId =
+            String(
+              stateData.userId || ""
+            ).trim();
+
+          if (!userId) {
+            throw new Error(
+              "OAuth user ID is missing"
+            );
+          }
+
+          await saveYoutubeTokens(
+            userId,
+            tokens
           );
 
-
-          await deleteOAuthState(
-            state
-          );
-
-
-          return send(
-            res,
+          res.writeHead(
             200,
             {
-
-              success:
-                true,
-
-              message:
-                "YouTube account connected successfully. You can return to Telegram."
+              "Content-Type":
+                "text/html; charset=utf-8"
             }
           );
 
-        } catch (error) {
+          return res.end(
+            "<h2>YouTube account connected successfully.</h2>" +
+            "<p>You can close this page and return to Telegram.</p>"
+          );
 
+        } catch (error) {
           console.error(
             "YouTube callback error:",
             error.message
           );
 
-
-          return send(
-            res,
+          res.writeHead(
             500,
             {
-
-              success:
-                false,
-
-              error:
-                "YouTube authorization failed"
+              "Content-Type":
+                "text/html; charset=utf-8"
             }
+          );
+
+          return res.end(
+            "<h2>YouTube connection failed.</h2>" +
+            "<p>" +
+            String(error.message) +
+            "</p>"
           );
         }
       }
 
-
-      /* =====================================================
+      /* =========================
          YOUTUBE STATUS
-      ===================================================== */
+         GET /youtube/status
+         ?user_id=123
+      ========================= */
 
       if (
         req.method === "GET" &&
         parsed.pathname ===
           "/youtube/status"
       ) {
-
-        const userId =
-          parsed.searchParams.get(
-            "user_id"
-          );
-
-
-        if (!userId) {
-
-          return send(
-            res,
-            400,
-            {
-
-              success:
-                false,
-
-              error:
-                "user_id is required"
-            }
-          );
-        }
-
-
         try {
+          const userId =
+            String(
+              parsed.searchParams.get(
+                "user_id"
+              ) || ""
+            ).trim();
 
-          const result =
-            await db.query(
-              `
-              SELECT user_id
+          if (!userId) {
+            return sendJson(
+              res,
+              400,
+              {
+                success: false,
+                error:
+                  "user_id is required"
+              }
+            );
+          }
 
-              FROM youtube_accounts
-
-              WHERE user_id = $1
-
-              LIMIT 1
-              `,
-              [
-                String(userId)
-              ]
+          const tokens =
+            await getYoutubeTokens(
+              userId
             );
 
+          if (!tokens) {
+            return sendJson(
+              res,
+              200,
+              {
+                success: true,
+                connected: false
+              }
+            );
+          }
 
-          return send(
+          return sendJson(
             res,
             200,
             {
-
-              success:
-                true,
-
-              connected:
-                result.rows.length > 0
+              success: true,
+              connected: true
             }
           );
 
         } catch (error) {
+          console.error(
+            "YouTube status error:",
+            error.message
+          );
 
-          return send(
+          return sendJson(
             res,
             500,
             {
-
-              success:
-                false,
-
+              success: false,
               error:
                 error.message
             }
           );
         }
       }
-
-
-      /* =====================================================
-         YOUTUBE VERIFY
-===================================================== */
+            /* =========================
+         PAYMENT VERIFICATION
+      ========================= */
 
       if (
-        req.method === "GET" &&
+        req.method === "POST" &&
         parsed.pathname ===
-          "/youtube/verify"
+          "/verify-payment"
       ) {
-
-        const userId =
-          parsed.searchParams.get(
-            "user_id"
-          );
-
-
-        const taskId =
-          parsed.searchParams.get(
-            "task_id"
-          );
-
-
-        if (
-          !userId ||
-          !taskId
-        ) {
-
-          return send(
-            res,
-            400,
-            {
-
-              success:
-                false,
-
-              error:
-                "user_id and task_id are required"
-            }
-          );
-        }
-
-
-        if (
-          !Number.isInteger(
-            Number(taskId)
-          ) ||
-          Number(taskId) <= 0
-        ) {
-
-          return send(
-            res,
-            400,
-            {
-
-              success:
-                false,
-
-              verified:
-                false,
-
-              error:
-                "Invalid task_id"
-            }
-          );
-        }
-
-
         try {
+          const body =
+            await readBody(req);
 
-          const result =
-            await verifyYoutubeTask(
-              userId,
-              Number(taskId)
+          const txHash =
+            String(
+              body.txHash ||
+              body.txid ||
+              body.transaction_hash ||
+              ""
+            ).trim();
+
+          const expectedAmount =
+            Number(
+              body.amount ||
+              body.plan_price ||
+              PLAN_PRICE
             );
 
+          if (!txHash) {
+            return sendJson(
+              res,
+              400,
+              {
+                success: false,
+                verified: false,
+                error:
+                  "Transaction hash is required"
+              }
+            );
+          }
 
-          return send(
+          if (
+            !/^0x[a-fA-F0-9]{64}$/.test(
+              txHash
+            )
+          ) {
+            return sendJson(
+              res,
+              400,
+              {
+                success: false,
+                verified: false,
+                error:
+                  "Invalid transaction hash"
+              }
+            );
+          }
+
+          if (
+            !Number.isFinite(
+              expectedAmount
+            ) ||
+            expectedAmount <= 0
+          ) {
+            return sendJson(
+              res,
+              400,
+              {
+                success: false,
+                verified: false,
+                error:
+                  "Invalid payment amount"
+              }
+            );
+          }
+
+          const result =
+            await verifyPayment(
+              txHash,
+              expectedAmount
+            );
+
+          return sendJson(
             res,
             200,
             result
           );
 
         } catch (error) {
-
           console.error(
-            "YouTube verification error:",
+            "Payment verification error:",
             error.message
           );
 
-
-          return send(
+          return sendJson(
             res,
             500,
             {
-
-              success:
-                false,
-
-              verified:
-                false,
-
+              success: false,
+              verified: false,
               error:
                 error.message
             }
@@ -3126,326 +2158,185 @@ const server =
         }
       }
 
-
-      /* =====================================================
-         PAYMENT VERIFY
-      ===================================================== */
-
-      if (
-        req.method === "GET" &&
-        parsed.pathname ===
-          "/verify-payment"
-      ) {
-
-        const txid =
-          parsed.searchParams.get(
-            "txid"
-          );
-
-
-        if (!txid) {
-
-          return send(
-            res,
-            400,
-            {
-
-              verified:
-                false,
-
-              error:
-                "TXID is required"
-            }
-          );
-        }
-
-
-        verifyPayment(
-
-          txid,
-
-          (result) => {
-
-            send(
-
-              res,
-
-              result.error
-                ? 502
-                : 200,
-
-              result
-            );
-          }
-        );
-
-
-        return;
-      }
-
-
-      /* =====================================================
+      /* =========================
          PAYOUT
-      ===================================================== */
+      ========================= */
 
       if (
         req.method === "POST" &&
         parsed.pathname ===
           "/payout"
       ) {
-
-        const providedSecret =
-          String(
-            req.headers[
-              "x-api-secret"
-            ] || ""
-          );
-
-
-        if (
-          !PAYOUT_API_SECRET ||
-          providedSecret !==
-            PAYOUT_API_SECRET
-        ) {
-
-          return send(
-            res,
-            401,
-            {
-
-              success:
-                false,
-
-              error:
-                "Unauthorized"
-            }
-          );
-        }
-
-
-        if (
-          payoutBusy
-        ) {
-
-          return send(
-            res,
-            429,
-            {
-
-              success:
-                false,
-
-              error:
-                "Another payout is currently processing"
-            }
-          );
-        }
-
-
         try {
+          const secret =
+            String(
+              req.headers[
+                "x-api-secret"
+              ] || ""
+            ).trim();
+
+          if (
+            !PAYOUT_API_SECRET ||
+            secret !==
+              PAYOUT_API_SECRET
+          ) {
+            return sendJson(
+              res,
+              401,
+              {
+                success: false,
+                error:
+                  "Unauthorized"
+              }
+            );
+          }
 
           const body =
             await readBody(req);
 
-
-          const wallet =
+          const walletAddress =
             String(
-              body.wallet || ""
+              body.wallet ||
+              body.address ||
+              body.walletAddress ||
+              ""
             ).trim();
-
 
           const amount =
             Number(
               body.amount
             );
 
-
           const clientOid =
             String(
-              body.clientOid || ""
+              body.clientOid ||
+              body.client_oid ||
+              ""
             ).trim();
 
-
-          if (
-            !clientOid
-          ) {
-
-            throw new Error(
-              "clientOid is required"
-            );
-          }
-
-
-          if (
-            processedPayouts.has(
-              clientOid
-            )
-          ) {
-
-            return send(
+          if (!walletAddress) {
+            return sendJson(
               res,
-              409,
+              400,
               {
-
-                success:
-                  false,
-
+                success: false,
                 error:
-                  "This payout was already processed"
+                  "Wallet address is required"
               }
             );
           }
 
+          if (
+            !Number.isFinite(amount) ||
+            amount <= 0
+          ) {
+            return sendJson(
+              res,
+              400,
+              {
+                success: false,
+                error:
+                  "Valid payout amount is required"
+              }
+            );
+          }
 
-          payoutBusy =
-            true;
-
-
-          const result =
+          const payout =
             await sendPayout(
-              wallet,
+              walletAddress,
               amount,
-              clientOid
+              clientOid ||
+                "WD_" +
+                Date.now()
             );
 
-
-          processedPayouts.add(
-            clientOid
-          );
-
-
-          return send(
+          return sendJson(
             res,
             200,
-            result
+            payout
           );
 
         } catch (error) {
-
           console.error(
             "Payout error:",
             error.message
           );
 
-
-          return send(
+          return sendJson(
             res,
-            400,
+            500,
             {
-
-              success:
-                false,
-
+              success: false,
               error:
-                error.message ||
-                "Payout failed"
+                error.message
             }
           );
-
-        } finally {
-
-          payoutBusy =
-            false;
         }
       }
 
+      /* =========================
+         404
+      ========================= */
 
-      /* =====================================================
-         NOT FOUND
-      ===================================================== */
-
-      return send(
+      return sendJson(
         res,
         404,
         {
-
-          success:
-            false,
-
+          success: false,
           error:
-            "Not Found"
+            "Route not found"
         }
       );
     }
   );
 
-
-/* =========================================================
-   START SERVER
-========================================================= */
+/* =========================
+   SERVER START
+========================= */
 
 server.listen(
-
   PORT,
-
-  "0.0.0.0",
-
-  async () => {
-
+  () => {
     console.log(
-      "================================="
+      "Telegram Bot Backend is running!"
     );
 
-
     console.log(
-      "Telegram Bot Backend Started"
-    );
-
-
-    console.log(
-      "================================="
-    );
-
-
-    console.log(
-      "Server running on port",
+      "Port:",
       PORT
     );
 
-
     console.log(
-      "Payment wallet:",
-      PAYMENT_WALLET
+      "Database:",
+      DATABASE_URL
+        ? "configured"
+        : "missing"
     );
-
-
-    console.log(
-      "USDT contract:",
-      USDT_CONTRACT
-    );
-
-
-    console.log(
-      "Payout wallet:",
-      PAYOUT_WALLET
-    );
-
-
-    console.log(
-      "Minimum withdraw:",
-      MIN_WITHDRAW,
-      "USDT"
-    );
-
 
     console.log(
       "YouTube OAuth:",
       youtubeConfigured()
-        ? "Configured"
-        : "NOT CONFIGURED"
+        ? "configured"
+        : "not configured"
     );
 
+    console.log(
+      "Telegram Bot Token:",
+      TELEGRAM_BOT_TOKEN
+        ? "configured"
+        : "missing"
+    );
 
-    try {
+    console.log(
+      "Payment Wallet:",
+      PAYMENT_WALLET
+    );
 
-      await initDatabase();
-
-    } catch (error) {
-
-      console.error(
-        "Database initialization error:",
-        error.message
-      );
-    }
+    console.log(
+      "Payout Wallet:",
+      PAYOUT_WALLET
+        ? PAYOUT_WALLET
+        : "missing"
+    );
   }
 );
