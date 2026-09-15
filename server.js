@@ -5,7 +5,8 @@ const { Pool } = require("pg");
 const { google } = require("googleapis");
 
 const PORT = process.env.PORT || 3000;
-
+const DATABASE_URL =
+  String(process.env.DATABASE_URL || "").trim();
 /* =========================
    POSTGRESQL
 ========================= */
